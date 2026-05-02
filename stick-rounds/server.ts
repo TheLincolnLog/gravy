@@ -3,11 +3,10 @@ import { createServer } from "http";
 import { Server } from "socket.io";
 import { createServer as createViteServer } from "vite";
 import path from "path";
-import { fileURLToPath } from "url";
 import { nanoid } from "nanoid";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+// Use path.resolve() for better compatibility with bundled CJS output
+const __root = path.resolve();
 
 async function startServer() {
   const app = express();
@@ -19,7 +18,8 @@ async function startServer() {
     }
   });
 
-  const PORT = 3000;
+  // Render provides the PORT environment variable dynamically
+  const PORT = process.env.PORT || 3000;
 
   // Selection Lobby State
   // Map of lobbyId -> { players: { socketId: { id, name, archetype, hoveredArchetype, isLocked } }, private: boolean }
@@ -167,7 +167,8 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), 'dist');
+    // Correctly serve static files from the 'dist' directory in production
+    const distPath = path.join(__root, 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
@@ -175,7 +176,7 @@ async function startServer() {
   }
 
   httpServer.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server running on port ${PORT}`);
   });
 }
 
