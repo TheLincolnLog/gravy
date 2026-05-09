@@ -42,17 +42,23 @@ export class GameEngine {
     life: number;
     maxLife: number;
     color: string;
+    color2?: string;       // Secondary color for gradient blending
     size: number;
     drag: number;
     gravity: number;
     rotation?: number;
     vRotation?: number;
-    type?: "spark" | "smoke" | "petal" | "circle" | "fluid" | "glow";
+    type?: "spark" | "smoke" | "petal" | "circle" | "fluid" | "glow" | "ribbon" | "ring" | "blob" | "streamer";
     vSize?: number;
     alpha?: number;
     additive?: boolean;
     flicker?: boolean;
     noise?: number;
+    chromatic?: boolean;   // Chromatic aberration offset effect
+    swirlAngle?: number;   // Current swirl angle for fluid simulation
+    swirlSpeed?: number;   // Swirl rotation speed
+    baseX?: number;        // Origin for ribbon anchoring
+    baseY?: number;
   }[] = [];
   private magnets: {
     id: string;
@@ -1041,13 +1047,16 @@ export class GameEngine {
       size?: number;
       vSize?: number;
       life?: number;
-      type?: "spark" | "smoke" | "petal" | "circle" | "fluid" | "glow";
+      type?: "spark" | "smoke" | "petal" | "circle" | "fluid" | "glow" | "ribbon" | "ring" | "blob" | "streamer";
       spread?: number;
       additive?: boolean;
       flicker?: boolean;
       vx?: number;
       vy?: number;
       noise?: number;
+      color2?: string;
+      chromatic?: boolean;
+      swirlSpeed?: number;
     } = {},
   ) {
     for (let i = 0; i < count; i++) {
@@ -1066,6 +1075,7 @@ export class GameEngine {
         maxLife: life,
         life,
         color,
+        color2: options.color2,
         size: options.size || Math.random() * 3 + 2,
         vSize: options.vSize || 0,
         drag: options.drag !== undefined ? options.drag : 0.98,
@@ -1076,6 +1086,11 @@ export class GameEngine {
         additive: options.additive !== undefined ? options.additive : false,
         flicker: options.flicker || false,
         noise: options.noise || 0,
+        chromatic: options.chromatic || false,
+        swirlAngle: Math.random() * Math.PI * 2,
+        swirlSpeed: options.swirlSpeed || 0,
+        baseX: x,
+        baseY: y,
       });
     }
   }
@@ -1407,91 +1422,71 @@ export class GameEngine {
     damage: number,
     ownerId: number,
   ) {
-    // Vivid Visual Flash
-    this.effects.push({
-      x,
-      y,
-      radius: radius * 1.5,
-      life: 20,
-      maxLife: 20,
-      color: "rgba(255, 255, 255, 0.8)",
-    });
+    // === ROUNDS-STYLE EXPLOSION ===
 
-    // Intense multi-layered explosion
-    const explosionColor = "#f59e0b";
-    
-    // 1. Fluid Cores (High density, bright, additive)
-    this.createParticles(x, y, explosionColor, 20, 3, {
-      drag: 0.94,
-      gravity: 0.1,
-      type: "fluid", // Custom fluid type for render
-      size: 15,
-      vSize: -0.2, // Shrinks
-      additive: true,
-      life: 1.2
-    });
+    // 1. White flash core
+    this.effects.push({ x, y, radius: radius * 0.6, life: 8, maxLife: 8, color: "rgba(255,255,255,1)" });
 
-    // 2. Bright Shockwave Sparks
-    this.createParticles(x, y, "#fff", 15, 6, {
-      drag: 0.9,
-      gravity: 0.3,
-      type: "spark",
-      size: 5,
-      additive: true,
-      life: 0.5
-    });
-
-    // 3. Trailing Embers
-    this.createParticles(x, y, "#ea580c", 25, 4, {
-      drag: 0.96,
-      gravity: 0.05,
-      type: "glow",
-      size: 6,
-      additive: true,
-      life: 1.5
-    });
-
-    // 4. Large Soft Smoke Clouds
-    this.createParticles(x, y, "rgba(50, 50, 50, 0.15)", 8, 0.8, {
-      drag: 0.98,
-      gravity: -0.05,
-      type: "smoke",
-      size: 15,
-      vSize: 0.3, // Slower growth
-      life: 2.0
-    });
-
-    // Shockwave Rings
-    for (let i = 0; i < 4; i++) {
+    // 2. Expanding color ring (shockwave)
+    for (let i = 0; i < 3; i++) {
       this.effects.push({
-        x,
-        y,
-        radius: radius * (0.8 + i * 0.4),
-        life: 10 + i * 8,
-        maxLife: 10 + i * 8,
-        color: i % 2 === 0 ? "rgba(255, 255, 255, 0.3)" : "rgba(255, 165, 0, 0.2)",
+        x, y,
+        radius: radius * (0.5 + i * 0.5),
+        life: 14 + i * 6,
+        maxLife: 14 + i * 6,
+        color: i === 0 ? "rgba(255,200,80,0.7)" : i === 1 ? "rgba(255,120,20,0.4)" : "rgba(180,60,10,0.2)",
       });
     }
+
+    // 3. Fluid blob cores — thick liquid orange/yellow bursts (ROUNDS look)
+    this.createParticles(x, y, "#ffcc22", 18, 4.5, {
+      drag: 0.91, gravity: 0.08, type: "blob", size: 18,
+      vSize: -0.25, additive: true, life: 1.4,
+      color2: "#ff6600", noise: 0.15, swirlSpeed: 0.12,
+    });
+
+    // 4. Radial spark burst — the spiky halo
+    this.createParticles(x, y, "#ffffff", 24, 8, {
+      drag: 0.88, gravity: 0.25, type: "spark", size: 4,
+      additive: true, life: 0.6, chromatic: true,
+    });
+
+    // 5. Chromatic streamers — energy tendrils flying outward
+    this.createParticles(x, y, "#ff8822", 12, 6, {
+      drag: 0.93, gravity: 0.1, type: "streamer", size: 8,
+      additive: true, life: 0.9, color2: "#ffff44",
+    });
+
+    // 6. Ember glow trails — floating embers that linger
+    this.createParticles(x, y, "#ff4400", 30, 3.5, {
+      drag: 0.97, gravity: -0.02, type: "fluid", size: 7,
+      vSize: -0.08, additive: true, life: 1.8,
+      color2: "#ffaa00", noise: 0.08,
+    });
+
+    // 7. Expanding ring particles
+    this.createParticles(x, y, "#ffdd88", 6, 0.5, {
+      drag: 0.99, gravity: 0, type: "ring", size: radius * 0.4,
+      additive: true, life: 0.7, vSize: radius * 0.04,
+    });
+
+    // 8. Soft smoke cloud backdrop
+    this.createParticles(x, y, "rgba(40,30,20,0.12)", 10, 0.9, {
+      drag: 0.985, gravity: -0.04, type: "smoke", size: 20,
+      vSize: 0.4, life: 2.5, noise: 0.05,
+    });
 
     const shakeAmount = (radius / 100) * 45;
     this.camera.shake = Math.max(this.camera.shake, shakeAmount);
 
     this.players.forEach((p) => {
-      const dist = Vector.magnitude(
-        Vector.sub(p.figure.torso.position, { x, y }),
-      );
+      const dist = Vector.magnitude(Vector.sub(p.figure.torso.position, { x, y }));
       if (dist < radius) {
         const ratio = 1 - dist / radius;
         this.handleDamage(p, damage * ratio, ownerId);
         const stabilityMult = 1 / ((p.data.stats.stability || 100) / 100);
-        const forceDir = Vector.normalise(
-          Vector.sub(p.figure.torso.position, { x, y }),
-        );
-        Body.applyForce(
-          p.figure.torso,
-          p.figure.torso.position,
-          Vector.mult(forceDir, 0.8 * ratio * stabilityMult),
-        );
+        const forceDir = Vector.normalise(Vector.sub(p.figure.torso.position, { x, y }));
+        Body.applyForce(p.figure.torso, p.figure.torso.position, Vector.mult(forceDir, 0.8 * ratio * stabilityMult));
       }
     });
   }
@@ -1759,69 +1754,43 @@ export class GameEngine {
               );
               return;
             }
-            // Vivid Fluid Splash Impact (ROUNDS style)
+            // === ROUNDS-STYLE FLUID WALL SPLASH ===
             const impactColor = (projectile.render.fillStyle as string) || "#fff";
             const impactVel = projectile.velocity;
+            const speed = Math.sqrt(impactVel.x * impactVel.x + impactVel.y * impactVel.y);
+            const normalizedVx = speed > 0 ? impactVel.x / speed : 0;
+            const normalizedVy = speed > 0 ? impactVel.y / speed : 0;
             
-            // 1. Fluid Wisps (Expanding mist that swirls)
-            this.createParticles(
-              projectile.position.x,
-              projectile.position.y,
-              impactColor,
-              10,
-              1.5,
-              {
-                type: "smoke",
-                drag: 0.96,
-                gravity: -0.05,
-                size: 8,
-                vSize: 0.3, // Much slower expansion
-                additive: true,
-                life: 1.0,
-                noise: 0.2, 
-                vx: -impactVel.x * 0.3,
-                vy: -impactVel.y * 0.3,
-              },
-            );
+            // 1. Primary fluid blobs — the main liquid splash
+            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 10, 2.5, {
+              type: "blob", drag: 0.92, gravity: 0.15, size: 9,
+              vSize: -0.18, additive: true, life: 0.9,
+              color2: "#ffffff", noise: 0.12, swirlSpeed: 0.18,
+              vx: -normalizedVx * speed * 0.3,
+              vy: -normalizedVy * speed * 0.3,
+            });
 
-            // 2. High-intensity Fluid Blobs (Bright cores)
-            this.createParticles(
-              projectile.position.x,
-              projectile.position.y,
-              "#ffffff",
-              6,
-              3.0,
-              {
-                type: "fluid",
-                drag: 0.94,
-                gravity: 0.2,
-                size: 6,
-                vSize: -0.15,
-                additive: true,
-                life: 0.5,
-                noise: 0.1,
-                vx: -impactVel.x * 0.4,
-                vy: -impactVel.y * 0.4,
-              },
-            );
+            // 2. Elongated chromatic sparks — the "pop" of impact
+            this.createParticles(projectile.position.x, projectile.position.y, "#ffffff", 8, 4.5, {
+              type: "spark", drag: 0.87, gravity: 0.2, size: 3,
+              additive: true, life: 0.45, chromatic: true,
+              vx: -normalizedVx * speed * 0.5,
+              vy: -normalizedVy * speed * 0.5,
+            });
 
-            // 3. Diffusion Glow (Ambient splash light)
-            this.createParticles(
-              projectile.position.x,
-              projectile.position.y,
-              impactColor,
-              4,
-              0.8,
-              {
-                type: "glow",
-                drag: 0.98,
-                gravity: 0,
-                size: 20,
-                vSize: 0.8,
-                additive: true,
-                life: 0.8,
-              },
-            );
+            // 3. Fluid streamer tendrils radiating from impact
+            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 5, 3.0, {
+              type: "streamer", drag: 0.93, gravity: 0.1, size: 6,
+              additive: true, life: 0.6, color2: "#ffffff",
+              vx: -normalizedVx * speed * 0.4,
+              vy: -normalizedVy * speed * 0.4,
+            });
+
+            // 4. Ambient glow bloom at impact point
+            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 3, 0.3, {
+              type: "ring", drag: 0.99, gravity: 0, size: 12,
+              additive: true, life: 0.5, vSize: 5,
+            });
             if (pData.isMagnet) {
               this.magnets.push({
                 id: Math.random().toString(),
@@ -4219,6 +4188,7 @@ export class GameEngine {
       p.x += p.vx;
       p.y += p.vy;
 
+      // Noise / swirl turbulence
       if (p.noise) {
         const swirl = (Math.random() - 0.5) * p.noise;
         const cos = Math.cos(swirl);
@@ -4227,6 +4197,14 @@ export class GameEngine {
         const newVy = p.vx * sin + p.vy * cos;
         p.vx = newVx;
         p.vy = newVy;
+      }
+
+      // Fluid swirl orbital motion (ROUNDS-style curling)
+      if (p.swirlSpeed) {
+        p.swirlAngle = (p.swirlAngle || 0) + p.swirlSpeed;
+        const swirlForce = p.life * 0.4;
+        p.vx += Math.cos(p.swirlAngle) * swirlForce * 0.08;
+        p.vy += Math.sin(p.swirlAngle) * swirlForce * 0.08;
       }
 
       p.vx *= p.drag;
@@ -4939,63 +4917,176 @@ export class GameEngine {
       }
 
       batch.forEach((p) => {
-        this.ctx.globalAlpha = p.life;
-        this.ctx.fillStyle = p.color;
-        
-        const hasTransform = p.rotation || (p.x !== 0 || p.y !== 0);
-        
-        if (hasTransform) {
-          this.ctx.save();
-          this.ctx.translate(p.x, p.y);
-          if (p.rotation) this.ctx.rotate(p.rotation);
-        }
+        const lifeRatio = p.life / p.maxLife; // 1 → 0 as it dies
+        const baseAlpha = p.life;
+
+        this.ctx.save();
+        this.ctx.translate(p.x, p.y);
+        if (p.rotation) this.ctx.rotate(p.rotation);
 
         if (p.type === "spark") {
-          // Optimized spark: simple line, avoid shadowBlur
-          this.ctx.beginPath();
-          this.ctx.moveTo(-p.size * 2, 0);
-          this.ctx.lineTo(p.size * 2, 0);
-          this.ctx.lineWidth = 2;
+          // Elongated spark: bright tapered line with a glowing head
+          const len = p.size * (2 + lifeRatio * 3);
+          const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+          const angle = Math.atan2(p.vy, p.vx);
+
+          this.ctx.globalAlpha = baseAlpha * 0.9;
           this.ctx.strokeStyle = p.color;
+          this.ctx.lineWidth = Math.max(0.5, p.size * 0.4 * lifeRatio);
+          this.ctx.lineCap = "round";
+          this.ctx.beginPath();
+          this.ctx.moveTo(0, 0);
+          this.ctx.lineTo(-Math.cos(angle) * len, -Math.sin(angle) * len);
           this.ctx.stroke();
-        } else if (p.type === "smoke") {
+
+          // Bright spark head
+          this.ctx.globalAlpha = baseAlpha;
+          this.ctx.fillStyle = "#ffffff";
           this.ctx.beginPath();
-          this.ctx.arc(hasTransform ? 0 : p.x, hasTransform ? 0 : p.y, p.size, 0, Math.PI * 2);
-          this.ctx.fill();
-        } else if (p.type === "fluid" || p.type === "glow") {
-          // High-performance glow: additive blending handles the "intensity"
-          // We draw a large faint circle for the glow and a small bright core
-          const size = p.size;
-          
-          // Outer glow (faint)
-          this.ctx.globalAlpha = p.life * 0.3;
-          this.ctx.beginPath();
-          this.ctx.arc(hasTransform ? 0 : p.x, hasTransform ? 0 : p.y, size * (p.type === "glow" ? 2.5 : 1.5), 0, Math.PI * 2);
-          this.ctx.fill();
-          
-          // Core
-          this.ctx.globalAlpha = p.life;
-          this.ctx.beginPath();
-          this.ctx.arc(hasTransform ? 0 : p.x, hasTransform ? 0 : p.y, size * 0.8, 0, Math.PI * 2);
+          this.ctx.arc(0, 0, p.size * 0.35 * lifeRatio, 0, Math.PI * 2);
           this.ctx.fill();
 
-          if (p.type === "fluid") {
-            this.ctx.fillStyle = "#fff";
-            this.ctx.globalAlpha = p.life * 0.5;
+          // Chromatic aberration — offset R/G/B channels
+          if (p.chromatic) {
+            this.ctx.globalAlpha = baseAlpha * 0.4;
+            this.ctx.strokeStyle = "#ff2244";
             this.ctx.beginPath();
-            this.ctx.arc((hasTransform ? 0 : p.x) - size * 0.2, (hasTransform ? 0 : p.y) - size * 0.2, size * 0.25, 0, Math.PI * 2);
-            this.ctx.fill();
-            this.ctx.fillStyle = p.color; // Reset for next particle
+            this.ctx.moveTo(-2, 0);
+            this.ctx.lineTo(-Math.cos(angle) * len - 2, -Math.sin(angle) * len);
+            this.ctx.stroke();
+            this.ctx.strokeStyle = "#22aaff";
+            this.ctx.beginPath();
+            this.ctx.moveTo(2, 0);
+            this.ctx.lineTo(-Math.cos(angle) * len + 2, -Math.sin(angle) * len);
+            this.ctx.stroke();
           }
-        } else {
+
+        } else if (p.type === "smoke") {
+          // Soft volumetric smoke puff with radial gradient
+          const size = p.size * (1 + (1 - lifeRatio) * 0.8);
+          const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, size);
+          grad.addColorStop(0, p.color.replace('rgba', 'rgba').replace(/[\d.]+\)$/, `${baseAlpha * 0.5})`));
+          grad.addColorStop(0.5, p.color.replace(/[\d.]+\)$/, `${baseAlpha * 0.2})`));
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = 1.0;
+          this.ctx.fillStyle = grad;
           this.ctx.beginPath();
-          this.ctx.arc(hasTransform ? 0 : p.x, hasTransform ? 0 : p.y, p.size / 2, 0, Math.PI * 2);
+          this.ctx.arc(0, 0, size, 0, Math.PI * 2);
+          this.ctx.fill();
+
+        } else if (p.type === "blob") {
+          // Organic blob — metaball-like with a squish
+          const scaleX = 1 + Math.sin(p.swirlAngle || 0) * 0.3;
+          const scaleY = 1 - Math.sin(p.swirlAngle || 0) * 0.3;
+          const size = p.size;
+          const grad = this.ctx.createRadialGradient(-size * 0.2, -size * 0.2, 0, 0, 0, size * scaleX);
+          grad.addColorStop(0, "#ffffff");
+          grad.addColorStop(0.25, p.color);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = baseAlpha;
+          this.ctx.scale(scaleX, scaleY);
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, size, 0, Math.PI * 2);
+          this.ctx.fill();
+
+        } else if (p.type === "fluid" || p.type === "glow") {
+          // ROUNDS-style fluid blob: radial gradient with chromatic halo
+          const size = p.size;
+          const isGlow = p.type === "glow";
+
+          // Outer chromatic halo (offset R and B channels)
+          if (isAdditive && size > 4) {
+            this.ctx.globalAlpha = baseAlpha * 0.15;
+            this.ctx.fillStyle = "#ff3366";
+            this.ctx.beginPath();
+            this.ctx.arc(-size * 0.15, 0, size * (isGlow ? 2.0 : 1.2), 0, Math.PI * 2);
+            this.ctx.fill();
+            this.ctx.fillStyle = "#33aaff";
+            this.ctx.beginPath();
+            this.ctx.arc(size * 0.15, 0, size * (isGlow ? 2.0 : 1.2), 0, Math.PI * 2);
+            this.ctx.fill();
+          }
+
+          // Main radial gradient body
+          const outerR = size * (isGlow ? 3.0 : 1.8);
+          const grad = this.ctx.createRadialGradient(-size * 0.1, -size * 0.1, 0, 0, 0, outerR);
+          grad.addColorStop(0, "#ffffff");
+          grad.addColorStop(0.2, p.color);
+          if (p.color2) {
+            grad.addColorStop(0.6, p.color2);
+          }
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = baseAlpha * (isGlow ? 0.5 : 1.0);
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, outerR, 0, Math.PI * 2);
+          this.ctx.fill();
+
+          // Bright specular dot (gives the "liquid" look)
+          if (!isGlow && lifeRatio > 0.3) {
+            this.ctx.globalAlpha = baseAlpha * 0.9 * lifeRatio;
+            this.ctx.fillStyle = "#ffffff";
+            this.ctx.beginPath();
+            this.ctx.arc(-size * 0.25, -size * 0.25, size * 0.2, 0, Math.PI * 2);
+            this.ctx.fill();
+          }
+
+        } else if (p.type === "ring") {
+          // Expanding shockwave ring
+          const radius = p.size * (1 + (1 - lifeRatio) * 2);
+          const thickness = Math.max(1, p.size * 0.15 * lifeRatio);
+          this.ctx.globalAlpha = baseAlpha * lifeRatio;
+          this.ctx.strokeStyle = p.color;
+          this.ctx.lineWidth = thickness;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, radius, 0, Math.PI * 2);
+          this.ctx.stroke();
+          // Inner bright ring
+          this.ctx.globalAlpha = baseAlpha * lifeRatio * 0.5;
+          this.ctx.strokeStyle = "#ffffff";
+          this.ctx.lineWidth = thickness * 0.4;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, radius * 0.9, 0, Math.PI * 2);
+          this.ctx.stroke();
+
+        } else if (p.type === "streamer") {
+          // Long ribbon streamer — ROUNDS-style energy tendril
+          const len = p.size * (3 + lifeRatio * 5);
+          const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy) + 0.01;
+          const dirX = -p.vx / spd;
+          const dirY = -p.vy / spd;
+          const perpX = -dirY;
+          const perpY = dirX;
+          const w = Math.max(0.5, p.size * 0.3 * lifeRatio);
+
+          const grad = this.ctx.createLinearGradient(0, 0, dirX * len, dirY * len);
+          grad.addColorStop(0, p.color);
+          grad.addColorStop(0.4, p.color2 || p.color);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = baseAlpha;
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.moveTo(perpX * w, perpY * w);
+          this.ctx.lineTo(dirX * len, dirY * len);
+          this.ctx.lineTo(-perpX * w, -perpY * w);
+          this.ctx.closePath();
+          this.ctx.fill();
+
+        } else {
+          // Default: crisp additive circle with soft halo
+          const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, p.size / 2 + 1);
+          grad.addColorStop(0, "#ffffff");
+          grad.addColorStop(0.4, p.color);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = baseAlpha;
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, p.size / 2 + 1, 0, Math.PI * 2);
           this.ctx.fill();
         }
 
-        if (hasTransform) {
-          this.ctx.restore();
-        }
+        this.ctx.restore();
       });
     };
 
@@ -5051,60 +5142,99 @@ export class GameEngine {
       this.ctx.restore();
     });
 
-    // Draw Projectile Trails
+    // Draw Projectile Trails — ROUNDS-style fluid motion blur
     this.ctx.save();
     this.ctx.globalCompositeOperation = "lighter";
     this.projectiles.forEach((p) => {
       const pData = p as any;
-      if (pData.trailPoints && pData.trailPoints.length > 1) {
-        const color = (p.render.fillStyle as string) || "#fff";
-        
-        // Draw glow layer (thicker, more transparent)
-        this.ctx.beginPath();
-        this.ctx.strokeStyle = color;
-        this.ctx.lineCap = "round";
-        this.ctx.lineJoin = "round";
-        
-        pData.trailPoints.forEach((point: any, i: number) => {
-          const ratio = i / pData.trailPoints.length;
-          this.ctx.lineWidth = (pData.circleRadius || 8) * ratio * 4; // Thick glow
-          this.ctx.globalAlpha = ratio * 0.2;
-          if (i === 0) this.ctx.moveTo(point.x, point.y);
-          else this.ctx.lineTo(point.x, point.y);
-        });
-        this.ctx.stroke();
+      if (!pData.trailPoints || pData.trailPoints.length < 2) return;
 
-        // Draw core layer (thinner, more opaque)
-        this.ctx.beginPath();
-        pData.trailPoints.forEach((point: any, i: number) => {
-          const ratio = i / pData.trailPoints.length;
-          this.ctx.lineWidth = (pData.circleRadius || 8) * ratio * 1.5;
-          this.ctx.globalAlpha = ratio * 0.8;
-          if (i === 0) this.ctx.moveTo(point.x, point.y);
-          else this.ctx.lineTo(point.x, point.y);
-        });
-        this.ctx.stroke();
-      }
+      const color = (p.render.fillStyle as string) || "#fff";
+      const radius = p.circleRadius || 6;
+      const pts = pData.trailPoints;
+
+      // Pass 1: Wide soft outer glow
+      this.ctx.beginPath();
+      this.ctx.lineCap = "round";
+      this.ctx.lineJoin = "round";
+      pts.forEach((pt: any, i: number) => {
+        const t = i / pts.length;
+        this.ctx.lineWidth = radius * t * 5;
+        this.ctx.globalAlpha = t * 0.12;
+        this.ctx.strokeStyle = color;
+        if (i === 0) this.ctx.moveTo(pt.x, pt.y);
+        else this.ctx.lineTo(pt.x, pt.y);
+      });
+      this.ctx.stroke();
+
+      // Pass 2: Chromatic red offset
+      this.ctx.globalAlpha = 0;
+      this.ctx.beginPath();
+      pts.forEach((pt: any, i: number) => {
+        const t = i / pts.length;
+        this.ctx.lineWidth = radius * t * 2.5;
+        this.ctx.globalAlpha = t * 0.18;
+        this.ctx.strokeStyle = "#ff3366";
+        if (i === 0) this.ctx.moveTo(pt.x - 2, pt.y);
+        else this.ctx.lineTo(pt.x - 2, pt.y);
+      });
+      this.ctx.stroke();
+
+      // Pass 3: Chromatic blue offset
+      this.ctx.beginPath();
+      pts.forEach((pt: any, i: number) => {
+        const t = i / pts.length;
+        this.ctx.lineWidth = radius * t * 2.5;
+        this.ctx.globalAlpha = t * 0.18;
+        this.ctx.strokeStyle = "#33aaff";
+        if (i === 0) this.ctx.moveTo(pt.x + 2, pt.y);
+        else this.ctx.lineTo(pt.x + 2, pt.y);
+      });
+      this.ctx.stroke();
+
+      // Pass 4: Bright core trail
+      this.ctx.beginPath();
+      this.ctx.strokeStyle = "#ffffff";
+      pts.forEach((pt: any, i: number) => {
+        const t = i / pts.length;
+        this.ctx.lineWidth = radius * t * 1.2;
+        this.ctx.globalAlpha = t * 0.7;
+        if (i === 0) this.ctx.moveTo(pt.x, pt.y);
+        else this.ctx.lineTo(pt.x, pt.y);
+      });
+      this.ctx.stroke();
     });
     this.ctx.restore();
 
-    // Draw Effects (Explosions)
+    // Draw Effects (Shockwave Rings) — ROUNDS style
     this.ctx.save();
     this.ctx.globalCompositeOperation = "lighter";
     this.effects.forEach((e) => {
       const ratio = e.life / e.maxLife;
+      const expandT = 1 - ratio;  // 0 → 1 as it expands
+      const currentR = e.radius * (0.1 + expandT * 1.2);
+
+      // Outer diffuse bloom
+      this.ctx.globalAlpha = ratio * 0.25;
       this.ctx.beginPath();
-      this.ctx.arc(e.x, e.y, e.radius * (0.2 + (1 - ratio) * 1.3), 0, Math.PI * 2);
+      this.ctx.arc(e.x, e.y, currentR * 1.3, 0, Math.PI * 2);
       this.ctx.fillStyle = e.color;
-      this.ctx.globalAlpha = ratio * 0.7;
       this.ctx.fill();
 
-      // Sharp white inner ring
+      // Main ring
+      this.ctx.globalAlpha = ratio * 0.7;
+      this.ctx.strokeStyle = e.color;
+      this.ctx.lineWidth = Math.max(1, e.radius * 0.08 * ratio);
       this.ctx.beginPath();
-      this.ctx.arc(e.x, e.y, e.radius * (0.1 + (1 - ratio) * 1.1), 0, Math.PI * 2);
-      this.ctx.strokeStyle = "#fff";
-      this.ctx.lineWidth = 3 * ratio;
-      this.ctx.globalAlpha = ratio * 0.5;
+      this.ctx.arc(e.x, e.y, currentR, 0, Math.PI * 2);
+      this.ctx.stroke();
+
+      // Inner bright white edge
+      this.ctx.globalAlpha = ratio * 0.4;
+      this.ctx.strokeStyle = "#ffffff";
+      this.ctx.lineWidth = Math.max(0.5, e.radius * 0.03 * ratio);
+      this.ctx.beginPath();
+      this.ctx.arc(e.x, e.y, currentR * 0.88, 0, Math.PI * 2);
       this.ctx.stroke();
     });
     this.ctx.restore();
@@ -5329,13 +5459,14 @@ export class GameEngine {
     this.projectiles.forEach((p) => {
       const pData = p as any;
       const color = (p.render.fillStyle as string) || "white";
+      const now = Date.now();
       
       this.ctx.save();
       this.ctx.globalCompositeOperation = "lighter";
 
       if (pData.isBlackHole || pData.isEraser) {
         this.ctx.translate(p.position.x, p.position.y);
-        this.ctx.rotate(Date.now() / 150);
+        this.ctx.rotate(now / 150);
         const radius = pData.isEraser ? 60 : 40;
         const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
         grad.addColorStop(0, "#000");
@@ -5346,51 +5477,85 @@ export class GameEngine {
         this.ctx.arc(0, 0, radius, 0, Math.PI * 2);
         this.ctx.fill();
 
-        // Add spikes
         this.ctx.strokeStyle = pData.isEraser ? "#ff4d4d" : "#d8b4fe";
         this.ctx.lineWidth = 2;
         for (let i = 0; i < 8; i++) {
-          const a = (i * Math.PI) / 4 + Date.now() / 1000;
+          const a = (i * Math.PI) / 4 + now / 1000;
           this.ctx.beginPath();
           this.ctx.moveTo(0, 0);
-          this.ctx.lineTo(
-            Math.cos(a) * radius * 1.5,
-            Math.sin(a) * radius * 1.5,
-          );
+          this.ctx.lineTo(Math.cos(a) * radius * 1.5, Math.sin(a) * radius * 1.5);
           this.ctx.stroke();
         }
       } else if (pData.isRailgun) {
+        // Railgun: sharp bright needle with chromatic fringe
+        const vMag = Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2) + 0.01;
+        const len = 40 + vMag * 1.5;
+        const nx = p.velocity.x / vMag;
+        const ny = p.velocity.y / vMag;
+        const angle = Math.atan2(p.velocity.y, p.velocity.x);
+
+        // Chromatic R/B fringe
+        this.ctx.globalAlpha = 0.35;
+        this.ctx.strokeStyle = "#ff2244";
+        this.ctx.lineWidth = 3;
         this.ctx.beginPath();
-        this.ctx.strokeStyle = "#38bdf8";
-        this.ctx.lineWidth = 2 + Math.random() * 4;
-        this.ctx.moveTo(p.position.x, p.position.y);
-        this.ctx.lineTo(
-          p.position.x - p.velocity.x * 2,
-          p.position.y - p.velocity.y * 2,
-        );
+        this.ctx.moveTo(p.position.x - 1.5, p.position.y);
+        this.ctx.lineTo(p.position.x - nx * len - 1.5, p.position.y - ny * len);
         this.ctx.stroke();
+        this.ctx.strokeStyle = "#22aaff";
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.position.x + 1.5, p.position.y);
+        this.ctx.lineTo(p.position.x - nx * len + 1.5, p.position.y - ny * len);
+        this.ctx.stroke();
+
+        // Core white needle
+        this.ctx.globalAlpha = 1.0;
+        this.ctx.strokeStyle = "#ffffff";
+        this.ctx.lineWidth = 2 + Math.random() * 1.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.position.x, p.position.y);
+        this.ctx.lineTo(p.position.x - nx * len, p.position.y - ny * len);
+        this.ctx.stroke();
+
       } else {
         const radius = p.circleRadius || 6;
-        
-        // Multi-layered glow (Efficient replacement for shadowBlur)
-        // Outer glow
-        this.ctx.globalAlpha = 0.3;
-        this.ctx.fillStyle = color;
+        const vMag = Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2);
+
+        // --- ROUNDS-style projectile: radial gradient orb + motion trail glow ---
+
+        // Outer soft chromatic halo (lateral fringe)
+        if (radius > 4) {
+          this.ctx.globalAlpha = 0.18;
+          this.ctx.fillStyle = "#ff3366";
+          this.ctx.beginPath();
+          this.ctx.arc(p.position.x - radius * 0.2, p.position.y, radius * 1.8, 0, Math.PI * 2);
+          this.ctx.fill();
+          this.ctx.fillStyle = "#3388ff";
+          this.ctx.beginPath();
+          this.ctx.arc(p.position.x + radius * 0.2, p.position.y, radius * 1.8, 0, Math.PI * 2);
+          this.ctx.fill();
+        }
+
+        // Main radial gradient orb
+        const grad = this.ctx.createRadialGradient(
+          p.position.x - radius * 0.25, p.position.y - radius * 0.25, 0,
+          p.position.x, p.position.y, radius * 2.2
+        );
+        grad.addColorStop(0, "#ffffff");
+        grad.addColorStop(0.25, color);
+        grad.addColorStop(0.7, color);
+        grad.addColorStop(1, "rgba(0,0,0,0)");
+        this.ctx.globalAlpha = 0.95;
+        this.ctx.fillStyle = grad;
         this.ctx.beginPath();
-        this.ctx.arc(p.position.x, p.position.y, radius * 2.5, 0, Math.PI * 2);
+        this.ctx.arc(p.position.x, p.position.y, radius * 2.2, 0, Math.PI * 2);
         this.ctx.fill();
 
-        // Inner glow
-        this.ctx.globalAlpha = 0.6;
-        this.ctx.beginPath();
-        this.ctx.arc(p.position.x, p.position.y, radius * 1.5, 0, Math.PI * 2);
-        this.ctx.fill();
-
-        // White Core
+        // Bright specular core
         this.ctx.globalAlpha = 1.0;
-        this.ctx.fillStyle = "#fff";
+        this.ctx.fillStyle = "#ffffff";
         this.ctx.beginPath();
-        this.ctx.arc(p.position.x, p.position.y, radius * 0.7, 0, Math.PI * 2);
+        this.ctx.arc(p.position.x - radius * 0.15, p.position.y - radius * 0.15, radius * 0.35, 0, Math.PI * 2);
         this.ctx.fill();
       }
       this.ctx.restore();
@@ -5404,21 +5569,6 @@ export class GameEngine {
       this.ctx.beginPath();
       this.ctx.arc(pos.x, pos.y, 5, 0, Math.PI * 2);
       this.ctx.fill();
-    });
-
-    this.effects.forEach((e) => {
-      this.ctx.save();
-      this.ctx.beginPath();
-      this.ctx.arc(
-        e.x,
-        e.y,
-        e.radius * (1 - e.life / e.maxLife),
-        0,
-        Math.PI * 2,
-      );
-      this.ctx.fillStyle = e.color;
-      this.ctx.fill();
-      this.ctx.restore();
     });
 
     this.drawLighting();
