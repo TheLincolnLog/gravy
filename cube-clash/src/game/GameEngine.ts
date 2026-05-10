@@ -1421,60 +1421,13 @@ export class GameEngine {
     radius: number,
     damage: number,
     ownerId: number,
+    weaponType?: string,
   ) {
-    // === ROUNDS-STYLE EXPLOSION ===
+    // Find owner color for VFX
+    const owner = this.players.find(p => p.data.id === ownerId);
+    const ownerColor = owner?.data.color || "#ff6600";
 
-    // 1. White flash core
-    this.effects.push({ x, y, radius: radius * 0.6, life: 8, maxLife: 8, color: "rgba(255,255,255,1)" });
-
-    // 2. Expanding color ring (shockwave)
-    for (let i = 0; i < 3; i++) {
-      this.effects.push({
-        x, y,
-        radius: radius * (0.5 + i * 0.5),
-        life: 14 + i * 6,
-        maxLife: 14 + i * 6,
-        color: i === 0 ? "rgba(255,200,80,0.7)" : i === 1 ? "rgba(255,120,20,0.4)" : "rgba(180,60,10,0.2)",
-      });
-    }
-
-    // 3. Fluid blob cores — thick liquid orange/yellow bursts (ROUNDS look)
-    this.createParticles(x, y, "#ffcc22", 18, 4.5, {
-      drag: 0.91, gravity: 0.08, type: "blob", size: 18,
-      vSize: -0.25, additive: true, life: 1.4,
-      color2: "#ff6600", noise: 0.15, swirlSpeed: 0.12,
-    });
-
-    // 4. Radial spark burst — the spiky halo
-    this.createParticles(x, y, "#ffffff", 24, 8, {
-      drag: 0.88, gravity: 0.25, type: "spark", size: 4,
-      additive: true, life: 0.6, chromatic: true,
-    });
-
-    // 5. Chromatic streamers — energy tendrils flying outward
-    this.createParticles(x, y, "#ff8822", 12, 6, {
-      drag: 0.93, gravity: 0.1, type: "streamer", size: 8,
-      additive: true, life: 0.9, color2: "#ffff44",
-    });
-
-    // 6. Ember glow trails — floating embers that linger
-    this.createParticles(x, y, "#ff4400", 30, 3.5, {
-      drag: 0.97, gravity: -0.02, type: "fluid", size: 7,
-      vSize: -0.08, additive: true, life: 1.8,
-      color2: "#ffaa00", noise: 0.08,
-    });
-
-    // 7. Expanding ring particles
-    this.createParticles(x, y, "#ffdd88", 6, 0.5, {
-      drag: 0.99, gravity: 0, type: "ring", size: radius * 0.4,
-      additive: true, life: 0.7, vSize: radius * 0.04,
-    });
-
-    // 8. Soft smoke cloud backdrop
-    this.createParticles(x, y, "rgba(40,30,20,0.12)", 10, 0.9, {
-      drag: 0.985, gravity: -0.04, type: "smoke", size: 20,
-      vSize: 0.4, life: 2.5, noise: 0.05,
-    });
+    this.spawnWeaponExplosion(x, y, weaponType || "bazooka", ownerColor, radius);
 
     const shakeAmount = (radius / 100) * 45;
     this.camera.shake = Math.max(this.camera.shake, shakeAmount);
@@ -1669,6 +1622,7 @@ export class GameEngine {
                   radius,
                   damage,
                   ownerId,
+                  pData.weaponType,
                 );
               } else if (pData.isPortalShot) {
                 this.createPortal(
@@ -1754,43 +1708,14 @@ export class GameEngine {
               );
               return;
             }
-            // === ROUNDS-STYLE FLUID WALL SPLASH ===
-            const impactColor = (projectile.render.fillStyle as string) || "#fff";
+            // Per-weapon fluid wall splash
             const impactVel = projectile.velocity;
-            const speed = Math.sqrt(impactVel.x * impactVel.x + impactVel.y * impactVel.y);
-            const normalizedVx = speed > 0 ? impactVel.x / speed : 0;
-            const normalizedVy = speed > 0 ? impactVel.y / speed : 0;
-            
-            // 1. Primary fluid blobs — the main liquid splash
-            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 10, 2.5, {
-              type: "blob", drag: 0.92, gravity: 0.15, size: 9,
-              vSize: -0.18, additive: true, life: 0.9,
-              color2: "#ffffff", noise: 0.12, swirlSpeed: 0.18,
-              vx: -normalizedVx * speed * 0.3,
-              vy: -normalizedVy * speed * 0.3,
-            });
-
-            // 2. Elongated chromatic sparks — the "pop" of impact
-            this.createParticles(projectile.position.x, projectile.position.y, "#ffffff", 8, 4.5, {
-              type: "spark", drag: 0.87, gravity: 0.2, size: 3,
-              additive: true, life: 0.45, chromatic: true,
-              vx: -normalizedVx * speed * 0.5,
-              vy: -normalizedVy * speed * 0.5,
-            });
-
-            // 3. Fluid streamer tendrils radiating from impact
-            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 5, 3.0, {
-              type: "streamer", drag: 0.93, gravity: 0.1, size: 6,
-              additive: true, life: 0.6, color2: "#ffffff",
-              vx: -normalizedVx * speed * 0.4,
-              vy: -normalizedVy * speed * 0.4,
-            });
-
-            // 4. Ambient glow bloom at impact point
-            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 3, 0.3, {
-              type: "ring", drag: 0.99, gravity: 0, size: 12,
-              additive: true, life: 0.5, vSize: 5,
-            });
+            this.spawnWeaponImpact(
+              projectile.position.x, projectile.position.y,
+              pData.weaponType || "default",
+              (projectile.render.fillStyle as string) || "#fff",
+              impactVel.x, impactVel.y,
+            );
             if (pData.isMagnet) {
               this.magnets.push({
                 id: Math.random().toString(),
@@ -1813,6 +1738,7 @@ export class GameEngine {
                 radius,
                 damage,
                 pData.ownerId,
+                pData.weaponType,
               );
               this.removeProjectile(projectile);
             } else if (pData.isPortalShot) {
@@ -2214,9 +2140,7 @@ export class GameEngine {
             this.explode(
               pos.x + (Math.random() - 0.5) * 150,
               pos.y + (Math.random() - 0.5) * 150,
-              60,
-              5,
-              p.data.id,
+              60, 5, p.data.id, "fireball_launcher",
             );
           }
           if (mode === "purple") {
@@ -3279,30 +3203,246 @@ export class GameEngine {
       });
       pData.prevPos = { x: projectile.position.x, y: projectile.position.y };
       pData.trailPoints = [];
+      // Tag the weapon type for per-weapon VFX lookup
+      pData.weaponType = weapon?.type || "default";
       this.projectiles.push(projectile);
       World.add(this.engine.world, projectile);
     }
 
-    // Muzzle Flash Effect
-    const flashColor = weapon
-      ? this.rarityColors[weapon.rarity]
-      : player.data.color;
-    
-    this.createParticles(
+    // Per-weapon muzzle flash
+    this.spawnMuzzleFlash(
       pos.x + Math.cos(angle) * 45,
       pos.y + Math.sin(angle) * 40,
-      flashColor,
-      8,
-      2,
-      {
-        type: "glow",
-        spread: 1.2,
-        life: 0.4,
-        size: 30,
-        additive: true,
-        vSize: 0.5
-      }
+      weapon?.type || "default",
+      player.data.color,
     );
+  }
+
+  // ═══════════════════════════════════════════════════════
+  // PER-WEAPON VFX SYSTEM
+  // ═══════════════════════════════════════════════════════
+
+  /**
+   * Per-weapon VFX profile. Each entry defines:
+   *   color / color2     — primary and secondary particle colors
+   *   impactType         — particle type for wall hits
+   *   impactSize         — blob/spark size
+   *   impactCount        — number of particles on impact
+   *   impactSpeed        — outward velocity multiplier
+   *   impactSwirlSpeed   — fluid swirl amount (makes it more liquid)
+   *   impactNoise        — turbulence
+   *   impactLife         — lifetime
+   *   muzzleType         — particle type at barrel
+   *   muzzleSize / muzzleCount
+   *   explodeColors      — [core, ember, smoke] for explosions
+   *   trailType          — particle type emitted each frame while flying
+   *   trailRate          — 0-1 probability per frame of emitting
+   */
+  private getWeaponVfx(weaponType: string, ownerColor: string): {
+    color: string; color2: string;
+    impactType: any; impactSize: number; impactCount: number;
+    impactSpeed: number; impactSwirlSpeed: number; impactNoise: number; impactLife: number;
+    muzzleType: any; muzzleSize: number; muzzleCount: number;
+    explodeColors: [string, string, string];
+    trailType: any; trailRate: number; trailSize: number;
+  } {
+    const presets: Record<string, any> = {
+      // ── FIRE / EXPLOSIVE ──────────────────────────────────
+      bazooka:           { color:"#ff6600", color2:"#ffcc00", impactType:"blob",     impactSize:14, impactCount:14, impactSpeed:3.2, impactSwirlSpeed:0.22, impactNoise:0.18, impactLife:1.1, muzzleType:"blob",     muzzleSize:22, muzzleCount:8,  explodeColors:["#ff8800","#ff2200","rgba(30,15,5,0.15)"],     trailType:"glow",     trailRate:0.9, trailSize:10 },
+      rocket_launcher:   { color:"#ff4400", color2:"#ffaa00", impactType:"blob",     impactSize:16, impactCount:16, impactSpeed:3.5, impactSwirlSpeed:0.20, impactNoise:0.2,  impactLife:1.2, muzzleType:"blob",     muzzleSize:20, muzzleCount:10, explodeColors:["#ff6600","#ff0000","rgba(20,10,5,0.12)"],     trailType:"fluid",    trailRate:1.0, trailSize:12 },
+      flamethrower:      { color:"#ff5500", color2:"#ffff00", impactType:"fluid",    impactSize:10, impactCount:18, impactSpeed:1.8, impactSwirlSpeed:0.35, impactNoise:0.3,  impactLife:0.9, muzzleType:"fluid",    muzzleSize:14, muzzleCount:14, explodeColors:["#ff8800","#ff3300","rgba(25,10,5,0.12)"],     trailType:"fluid",    trailRate:1.0, trailSize:14 },
+      fireball_launcher: { color:"#ff6600", color2:"#ffdd00", impactType:"blob",     impactSize:12, impactCount:12, impactSpeed:2.8, impactSwirlSpeed:0.28, impactNoise:0.2,  impactLife:1.0, muzzleType:"blob",     muzzleSize:18, muzzleCount:8,  explodeColors:["#ff9900","#ff4400","rgba(20,10,5,0.1)"],      trailType:"fluid",    trailRate:0.9, trailSize:11 },
+      dragon_breath:     { color:"#ff3300", color2:"#ff9900", impactType:"fluid",    impactSize:13, impactCount:20, impactSpeed:2.0, impactSwirlSpeed:0.40, impactNoise:0.35, impactLife:1.0, muzzleType:"fluid",    muzzleSize:16, muzzleCount:16, explodeColors:["#ff6600","#ff0000","rgba(15,5,0,0.1)"],       trailType:"fluid",    trailRate:1.0, trailSize:16 },
+      flame_staff:       { color:"#ff2200", color2:"#ff8800", impactType:"fluid",    impactSize:11, impactCount:14, impactSpeed:2.2, impactSwirlSpeed:0.30, impactNoise:0.25, impactLife:0.9, muzzleType:"fluid",    muzzleSize:15, muzzleCount:10, explodeColors:["#ff5500","#ff1100","rgba(15,5,0,0.1)"],       trailType:"fluid",    trailRate:0.95,trailSize:13 },
+      inferno_cannon:    { color:"#cc0000", color2:"#ff6600", impactType:"blob",     impactSize:18, impactCount:18, impactSpeed:3.8, impactSwirlSpeed:0.18, impactNoise:0.15, impactLife:1.3, muzzleType:"blob",     muzzleSize:26, muzzleCount:12, explodeColors:["#ff4400","#aa0000","rgba(20,5,0,0.12)"],      trailType:"blob",     trailRate:0.8, trailSize:14 },
+
+      // ── ICE / FREEZE ──────────────────────────────────────
+      freeze_ray:        { color:"#88eeff", color2:"#ffffff", impactType:"fluid",    impactSize:11, impactCount:14, impactSpeed:2.5, impactSwirlSpeed:0.12, impactNoise:0.08, impactLife:1.2, muzzleType:"fluid",    muzzleSize:16, muzzleCount:8,  explodeColors:["#aaddff","#ffffff","rgba(10,30,50,0.1)"],     trailType:"fluid",    trailRate:0.85,trailSize:10 },
+      ice_spike:         { color:"#b3ecff", color2:"#ffffff", impactType:"spark",    impactSize:6,  impactCount:20, impactSpeed:5.0, impactSwirlSpeed:0.05, impactNoise:0.05, impactLife:0.7, muzzleType:"spark",    muzzleSize:6,  muzzleCount:12, explodeColors:["#ccf0ff","#ffffff","rgba(5,20,40,0.08)"],     trailType:"glow",     trailRate:0.7, trailSize:8  },
+      frost_giant_axe:   { color:"#66ccff", color2:"#aaffff", impactType:"blob",     impactSize:14, impactCount:12, impactSpeed:3.0, impactSwirlSpeed:0.10, impactNoise:0.1,  impactLife:1.1, muzzleType:"blob",     muzzleSize:20, muzzleCount:8,  explodeColors:["#99ddff","#ffffff","rgba(5,20,40,0.08)"],     trailType:"fluid",    trailRate:0.8, trailSize:12 },
+
+      // ── ELECTRIC / LIGHTNING ──────────────────────────────
+      arc_lightning:     { color:"#ffffff", color2:"#aaccff", impactType:"spark",    impactSize:5,  impactCount:28, impactSpeed:7.0, impactSwirlSpeed:0.08, impactNoise:0.6,  impactLife:0.45,muzzleType:"spark",    muzzleSize:4,  muzzleCount:20, explodeColors:["#ccddff","#ffffff","rgba(5,10,30,0.08)"],     trailType:"spark",    trailRate:0.95,trailSize:4  },
+      thunder_bow:       { color:"#ffee00", color2:"#ffffff", impactType:"spark",    impactSize:6,  impactCount:24, impactSpeed:6.5, impactSwirlSpeed:0.06, impactNoise:0.5,  impactLife:0.5, muzzleType:"spark",    muzzleSize:5,  muzzleCount:16, explodeColors:["#ffdd00","#ffffff","rgba(20,15,0,0.08)"],     trailType:"spark",    trailRate:0.9, trailSize:5  },
+      tesla_coil:        { color:"#88aaff", color2:"#ffffff", impactType:"spark",    impactSize:5,  impactCount:30, impactSpeed:7.5, impactSwirlSpeed:0.10, impactNoise:0.65, impactLife:0.4, muzzleType:"spark",    muzzleSize:4,  muzzleCount:24, explodeColors:["#aabbff","#ffffff","rgba(5,10,30,0.08)"],     trailType:"spark",    trailRate:1.0, trailSize:4  },
+      electric_whip:     { color:"#99ccff", color2:"#ffffff", impactType:"spark",    impactSize:4,  impactCount:22, impactSpeed:6.0, impactSwirlSpeed:0.08, impactNoise:0.55, impactLife:0.4, muzzleType:"spark",    muzzleSize:3,  muzzleCount:18, explodeColors:["#bbddff","#ffffff","rgba(5,10,30,0.06)"],     trailType:"spark",    trailRate:1.0, trailSize:3  },
+
+      // ── POISON / ACID / TOXIC ─────────────────────────────
+      poison_dart_gun:   { color:"#88ff44", color2:"#446600", impactType:"fluid",    impactSize:9,  impactCount:12, impactSpeed:2.0, impactSwirlSpeed:0.28, impactNoise:0.25, impactLife:1.1, muzzleType:"fluid",    muzzleSize:10, muzzleCount:6,  explodeColors:["#66ee22","#224400","rgba(10,20,5,0.1)"],      trailType:"fluid",    trailRate:0.7, trailSize:8  },
+      toxic_cloud:       { color:"#aaff00", color2:"#558800", impactType:"smoke",    impactSize:20, impactCount:10, impactSpeed:0.8, impactSwirlSpeed:0.18, impactNoise:0.4,  impactLife:2.0, muzzleType:"smoke",    muzzleSize:25, muzzleCount:8,  explodeColors:["#88ee00","#335500","rgba(10,20,5,0.15)"],     trailType:"smoke",    trailRate:0.8, trailSize:18 },
+      acid_spitter:      { color:"#ccff44", color2:"#446600", impactType:"blob",     impactSize:10, impactCount:14, impactSpeed:2.2, impactSwirlSpeed:0.30, impactNoise:0.28, impactLife:1.0, muzzleType:"blob",     muzzleSize:12, muzzleCount:8,  explodeColors:["#aaff22","#335500","rgba(10,20,5,0.1)"],      trailType:"fluid",    trailRate:0.75,trailSize:9  },
+      necro_staff:       { color:"#55ff44", color2:"#003300", impactType:"fluid",    impactSize:12, impactCount:10, impactSpeed:1.5, impactSwirlSpeed:0.22, impactNoise:0.2,  impactLife:1.3, muzzleType:"fluid",    muzzleSize:15, muzzleCount:8,  explodeColors:["#44cc22","#112200","rgba(5,15,5,0.1)"],       trailType:"glow",     trailRate:0.6, trailSize:10 },
+
+      // ── PLASMA / ENERGY ───────────────────────────────────
+      plasma_rifle:      { color:"#00ffaa", color2:"#00ffff", impactType:"blob",     impactSize:12, impactCount:14, impactSpeed:3.0, impactSwirlSpeed:0.25, impactNoise:0.15, impactLife:1.0, muzzleType:"blob",     muzzleSize:16, muzzleCount:10, explodeColors:["#00ffbb","#00aaff","rgba(0,20,15,0.1)"],      trailType:"fluid",    trailRate:0.9, trailSize:11 },
+      photon_blaster:    { color:"#00ccff", color2:"#ffffff", impactType:"fluid",    impactSize:11, impactCount:12, impactSpeed:3.5, impactSwirlSpeed:0.15, impactNoise:0.1,  impactLife:0.8, muzzleType:"fluid",    muzzleSize:14, muzzleCount:8,  explodeColors:["#00ddff","#aaffff","rgba(0,15,25,0.08)"],     trailType:"streamer", trailRate:0.9, trailSize:8  },
+      nebula_ray:        { color:"#dd88ff", color2:"#ff44ff", impactType:"blob",     impactSize:13, impactCount:14, impactSpeed:2.8, impactSwirlSpeed:0.30, impactNoise:0.2,  impactLife:1.1, muzzleType:"blob",     muzzleSize:18, muzzleCount:10, explodeColors:["#cc66ff","#ff00ff","rgba(20,5,25,0.1)"],      trailType:"fluid",    trailRate:0.9, trailSize:12 },
+      pulsar_rifle:      { color:"#8888ff", color2:"#ccccff", impactType:"streamer", impactSize:8,  impactCount:14, impactSpeed:4.0, impactSwirlSpeed:0.08, impactNoise:0.12, impactLife:0.8, muzzleType:"streamer", muzzleSize:10, muzzleCount:10, explodeColors:["#8899ff","#ccddff","rgba(5,5,20,0.08)"],      trailType:"streamer", trailRate:0.95,trailSize:7  },
+      arcane_missile:    { color:"#7755ff", color2:"#ffaaff", impactType:"blob",     impactSize:11, impactCount:12, impactSpeed:2.5, impactSwirlSpeed:0.28, impactNoise:0.18, impactLife:1.0, muzzleType:"blob",     muzzleSize:15, muzzleCount:8,  explodeColors:["#9966ff","#ff88ff","rgba(15,5,20,0.1)"],      trailType:"fluid",    trailRate:0.85,trailSize:10 },
+      quantum_rifle:     { color:"#44aaff", color2:"#aaffff", impactType:"streamer", impactSize:9,  impactCount:16, impactSpeed:4.5, impactSwirlSpeed:0.06, impactNoise:0.1,  impactLife:0.7, muzzleType:"streamer", muzzleSize:11, muzzleCount:10, explodeColors:["#55ccff","#aaffff","rgba(0,15,25,0.08)"],     trailType:"streamer", trailRate:1.0, trailSize:8  },
+      omega_cannon:      { color:"#ff2200", color2:"#ff9900", impactType:"blob",     impactSize:22, impactCount:20, impactSpeed:5.0, impactSwirlSpeed:0.15, impactNoise:0.12, impactLife:1.5, muzzleType:"blob",     muzzleSize:35, muzzleCount:16, explodeColors:["#ff5500","#ff0000","rgba(30,5,0,0.18)"],      trailType:"blob",     trailRate:1.0, trailSize:20 },
+      disintegration_ray:{ color:"#000000", color2:"#440000", impactType:"fluid",    impactSize:14, impactCount:10, impactSpeed:2.0, impactSwirlSpeed:0.12, impactNoise:0.15, impactLife:0.8, muzzleType:"fluid",    muzzleSize:18, muzzleCount:6,  explodeColors:["#220000","#440000","rgba(10,0,0,0.15)"],      trailType:"glow",     trailRate:0.7, trailSize:12 },
+      reality_warper:    { color:"#ff88ff", color2:"#ffffff", impactType:"blob",     impactSize:15, impactCount:14, impactSpeed:2.5, impactSwirlSpeed:0.40, impactNoise:0.35, impactLife:1.2, muzzleType:"blob",     muzzleSize:20, muzzleCount:10, explodeColors:["#ff66ff","#ffffff","rgba(20,5,20,0.1)"],      trailType:"fluid",    trailRate:0.85,trailSize:14 },
+      chaos_orb:         { color:"#dd00ff", color2:"#ff00aa", impactType:"blob",     impactSize:16, impactCount:16, impactSpeed:3.0, impactSwirlSpeed:0.45, impactNoise:0.4,  impactLife:1.3, muzzleType:"blob",     muzzleSize:22, muzzleCount:12, explodeColors:["#bb00ee","#ff0088","rgba(20,0,20,0.12)"],     trailType:"fluid",    trailRate:0.9, trailSize:15 },
+      echo_cannon:       { color:"#aaaaaa", color2:"#ffffff", impactType:"ring",     impactSize:20, impactCount:6,  impactSpeed:1.0, impactSwirlSpeed:0.05, impactNoise:0.05, impactLife:0.8, muzzleType:"ring",     muzzleSize:25, muzzleCount:4,  explodeColors:["#cccccc","#ffffff","rgba(15,15,15,0.1)"],     trailType:"ring",     trailRate:0.4, trailSize:18 },
+      stasis_field:      { color:"#3399ff", color2:"#aaccff", impactType:"ring",     impactSize:18, impactCount:6,  impactSpeed:0.8, impactSwirlSpeed:0.04, impactNoise:0.04, impactLife:1.0, muzzleType:"ring",     muzzleSize:22, muzzleCount:4,  explodeColors:["#4488ff","#aaddff","rgba(5,10,30,0.1)"],      trailType:"ring",     trailRate:0.35,trailSize:16 },
+
+      // ── GRAVITY / VOID / DARK ─────────────────────────────
+      black_hole:        { color:"#a855f7", color2:"#220033", impactType:"fluid",    impactSize:18, impactCount:8,  impactSpeed:1.2, impactSwirlSpeed:0.55, impactNoise:0.5,  impactLife:1.5, muzzleType:"fluid",    muzzleSize:22, muzzleCount:6,  explodeColors:["#9900ff","#220044","rgba(10,0,20,0.15)"],     trailType:"fluid",    trailRate:0.7, trailSize:16 },
+      gravity_pulse:     { color:"#aa55ff", color2:"#440088", impactType:"ring",     impactSize:22, impactCount:6,  impactSpeed:0.6, impactSwirlSpeed:0.06, impactNoise:0.08, impactLife:1.2, muzzleType:"ring",     muzzleSize:28, muzzleCount:4,  explodeColors:["#9944ee","#440077","rgba(10,0,20,0.12)"],     trailType:"ring",     trailRate:0.4, trailSize:20 },
+      void_bow:          { color:"#7c3aed", color2:"#cc88ff", impactType:"blob",     impactSize:13, impactCount:12, impactSpeed:2.5, impactSwirlSpeed:0.35, impactNoise:0.25, impactLife:1.1, muzzleType:"blob",     muzzleSize:17, muzzleCount:8,  explodeColors:["#8833dd","#cc66ff","rgba(10,0,20,0.1)"],      trailType:"fluid",    trailRate:0.8, trailSize:12 },
+      void_sabre:        { color:"#7c3aed", color2:"#aa66ff", impactType:"fluid",    impactSize:12, impactCount:10, impactSpeed:2.2, impactSwirlSpeed:0.30, impactNoise:0.2,  impactLife:0.9, muzzleType:"fluid",    muzzleSize:16, muzzleCount:8,  explodeColors:["#7722cc","#aa55ff","rgba(10,0,20,0.08)"],     trailType:"fluid",    trailRate:0.75,trailSize:11 },
+      gravity_cannon:    { color:"#cc88ff", color2:"#440066", impactType:"ring",     impactSize:24, impactCount:8,  impactSpeed:0.5, impactSwirlSpeed:0.08, impactNoise:0.06, impactLife:1.4, muzzleType:"ring",     muzzleSize:30, muzzleCount:5,  explodeColors:["#aa55ee","#330055","rgba(10,0,20,0.15)"],     trailType:"ring",     trailRate:0.45,trailSize:22 },
+      gravity_grenade:   { color:"#a855f7", color2:"#330066", impactType:"blob",     impactSize:14, impactCount:10, impactSpeed:2.0, impactSwirlSpeed:0.40, impactNoise:0.3,  impactLife:1.2, muzzleType:"blob",     muzzleSize:18, muzzleCount:8,  explodeColors:["#9933ee","#220055","rgba(10,0,20,0.12)"],     trailType:"fluid",    trailRate:0.6, trailSize:13 },
+      shatter_ray:       { color:"#88ddff", color2:"#ffffff", impactType:"spark",    impactSize:7,  impactCount:24, impactSpeed:5.5, impactSwirlSpeed:0.06, impactNoise:0.2,  impactLife:0.6, muzzleType:"spark",    muzzleSize:5,  muzzleCount:16, explodeColors:["#aaeeff","#ffffff","rgba(0,15,25,0.08)"],     trailType:"spark",    trailRate:0.85,trailSize:5  },
+
+      // ── LIFE / HEALING / VAMPIRIC ─────────────────────────
+      vampire_bat_gun:   { color:"#ff0044", color2:"#660011", impactType:"fluid",    impactSize:10, impactCount:12, impactSpeed:2.5, impactSwirlSpeed:0.28, impactNoise:0.22, impactLife:1.0, muzzleType:"fluid",    muzzleSize:12, muzzleCount:8,  explodeColors:["#dd0033","#440011","rgba(20,0,5,0.1)"],       trailType:"fluid",    trailRate:0.75,trailSize:9  },
+      lifesteal_dagger:  { color:"#ff2255", color2:"#880022", impactType:"blob",     impactSize:9,  impactCount:10, impactSpeed:2.8, impactSwirlSpeed:0.24, impactNoise:0.2,  impactLife:0.9, muzzleType:"blob",     muzzleSize:11, muzzleCount:6,  explodeColors:["#ee1144","#550011","rgba(20,0,5,0.08)"],      trailType:"fluid",    trailRate:0.7, trailSize:8  },
+      blood_spear:       { color:"#ee0022", color2:"#660000", impactType:"blob",     impactSize:13, impactCount:14, impactSpeed:3.0, impactSwirlSpeed:0.20, impactNoise:0.18, impactLife:1.0, muzzleType:"blob",     muzzleSize:16, muzzleCount:10, explodeColors:["#dd0011","#550000","rgba(20,0,0,0.1)"],       trailType:"fluid",    trailRate:0.8, trailSize:12 },
+      soul_reaper:       { color:"#8800ff", color2:"#ff0044", impactType:"fluid",    impactSize:12, impactCount:12, impactSpeed:2.2, impactSwirlSpeed:0.35, impactNoise:0.28, impactLife:1.1, muzzleType:"fluid",    muzzleSize:16, muzzleCount:8,  explodeColors:["#7700ee","#dd0033","rgba(15,0,15,0.1)"],      trailType:"fluid",    trailRate:0.8, trailSize:11 },
+      holy_grenade:      { color:"#ffffcc", color2:"#ffee88", impactType:"blob",     impactSize:16, impactCount:18, impactSpeed:3.5, impactSwirlSpeed:0.18, impactNoise:0.15, impactLife:1.3, muzzleType:"blob",     muzzleSize:22, muzzleCount:12, explodeColors:["#ffffaa","#ffdd55","rgba(25,25,10,0.1)"],     trailType:"glow",     trailRate:0.8, trailSize:14 },
+
+      // ── SNIPER / PRECISION ────────────────────────────────
+      railgun:           { color:"#38bdf8", color2:"#ffffff", impactType:"spark",    impactSize:5,  impactCount:30, impactSpeed:8.0, impactSwirlSpeed:0.04, impactNoise:0.12, impactLife:0.5, muzzleType:"streamer", muzzleSize:8,  muzzleCount:12, explodeColors:["#55ccff","#ffffff","rgba(0,15,25,0.06)"],     trailType:"streamer", trailRate:1.0, trailSize:6  },
+      nuclear_sniper:    { color:"#aaff44", color2:"#ffff88", impactType:"spark",    impactSize:6,  impactCount:28, impactSpeed:7.5, impactSwirlSpeed:0.05, impactNoise:0.15, impactLife:0.55,muzzleType:"streamer", muzzleSize:9,  muzzleCount:14, explodeColors:["#aaee33","#ffff66","rgba(10,20,0,0.08)"],     trailType:"streamer", trailRate:1.0, trailSize:7  },
+      sniper_rifle:      { color:"#f8fafc", color2:"#aaccff", impactType:"spark",    impactSize:4,  impactCount:22, impactSpeed:7.0, impactSwirlSpeed:0.03, impactNoise:0.08, impactLife:0.45,muzzleType:"streamer", muzzleSize:6,  muzzleCount:10, explodeColors:["#ccddff","#ffffff","rgba(5,5,15,0.06)"],      trailType:"streamer", trailRate:1.0, trailSize:5  },
+
+      // ── SHOTGUN / SMG / PISTOL ────────────────────────────
+      shotgun:           { color:"#fbbf24", color2:"#ffee88", impactType:"spark",    impactSize:5,  impactCount:16, impactSpeed:5.0, impactSwirlSpeed:0.08, impactNoise:0.2,  impactLife:0.5, muzzleType:"spark",    muzzleSize:6,  muzzleCount:14, explodeColors:["#ffcc33","#ffaa00","rgba(20,15,0,0.08)"],     trailType:"spark",    trailRate:0.6, trailSize:4  },
+      smg:               { color:"#e5e7eb", color2:"#ffffff", impactType:"spark",    impactSize:3,  impactCount:10, impactSpeed:4.5, impactSwirlSpeed:0.06, impactNoise:0.15, impactLife:0.35,muzzleType:"spark",    muzzleSize:4,  muzzleCount:8,  explodeColors:["#cccccc","#ffffff","rgba(10,10,10,0.06)"],    trailType:"spark",    trailRate:0.5, trailSize:3  },
+      pistol:            { color:"#d1d5db", color2:"#ffffff", impactType:"spark",    impactSize:4,  impactCount:12, impactSpeed:4.0, impactSwirlSpeed:0.07, impactNoise:0.12, impactLife:0.4, muzzleType:"spark",    muzzleSize:5,  muzzleCount:8,  explodeColors:["#dddddd","#ffffff","rgba(10,10,10,0.06)"],    trailType:"spark",    trailRate:0.45,trailSize:3  },
+      minigun:           { color:"#fca5a5", color2:"#ffffff", impactType:"spark",    impactSize:4,  impactCount:12, impactSpeed:5.0, impactSwirlSpeed:0.07, impactNoise:0.2,  impactLife:0.4, muzzleType:"spark",    muzzleSize:5,  muzzleCount:10, explodeColors:["#ffaaaa","#ffffff","rgba(15,5,5,0.06)"],      trailType:"spark",    trailRate:0.7, trailSize:3  },
+
+      // ── MAGIC / WAND ──────────────────────────────────────
+      stardust_wand:     { color:"#ffee88", color2:"#ffffff", impactType:"fluid",    impactSize:10, impactCount:14, impactSpeed:2.0, impactSwirlSpeed:0.30, impactNoise:0.25, impactLife:1.1, muzzleType:"fluid",    muzzleSize:14, muzzleCount:10, explodeColors:["#ffdd77","#ffffff","rgba(20,20,5,0.08)"],     trailType:"glow",     trailRate:0.8, trailSize:9  },
+      emerald_staff:     { color:"#44ff88", color2:"#00aa44", impactType:"blob",     impactSize:12, impactCount:12, impactSpeed:2.2, impactSwirlSpeed:0.25, impactNoise:0.2,  impactLife:1.0, muzzleType:"blob",     muzzleSize:16, muzzleCount:8,  explodeColors:["#33ee77","#006633","rgba(5,20,5,0.08)"],      trailType:"fluid",    trailRate:0.8, trailSize:11 },
+      ruby_repeater:     { color:"#ff4455", color2:"#ffaaaa", impactType:"fluid",    impactSize:10, impactCount:12, impactSpeed:3.0, impactSwirlSpeed:0.20, impactNoise:0.15, impactLife:0.8, muzzleType:"fluid",    muzzleSize:12, muzzleCount:8,  explodeColors:["#ff3344","#ffbbbb","rgba(20,5,5,0.08)"],      trailType:"fluid",    trailRate:0.85,trailSize:9  },
+      sapphire_bow:      { color:"#4499ff", color2:"#aaccff", impactType:"fluid",    impactSize:11, impactCount:12, impactSpeed:2.8, impactSwirlSpeed:0.18, impactNoise:0.12, impactLife:0.9, muzzleType:"fluid",    muzzleSize:14, muzzleCount:8,  explodeColors:["#3388ff","#aaddff","rgba(0,10,25,0.08)"],     trailType:"streamer", trailRate:0.8, trailSize:10 },
+      druid_staff:       { color:"#44cc88", color2:"#226644", impactType:"fluid",    impactSize:11, impactCount:12, impactSpeed:1.8, impactSwirlSpeed:0.32, impactNoise:0.28, impactLife:1.2, muzzleType:"fluid",    muzzleSize:15, muzzleCount:8,  explodeColors:["#33bb77","#115533","rgba(5,15,5,0.1)"],       trailType:"fluid",    trailRate:0.75,trailSize:10 },
+      starlight_wand:    { color:"#ffffff", color2:"#aabbff", impactType:"fluid",    impactSize:10, impactCount:14, impactSpeed:2.2, impactSwirlSpeed:0.25, impactNoise:0.2,  impactLife:1.0, muzzleType:"fluid",    muzzleSize:14, muzzleCount:10, explodeColors:["#ddeeff","#ffffff","rgba(10,10,20,0.08)"],    trailType:"glow",     trailRate:0.85,trailSize:9  },
+
+      // ── EXPLOSIVE SPECIALS ────────────────────────────────
+      nuke:              { color:"#ffee00", color2:"#ff8800", impactType:"blob",     impactSize:25, impactCount:22, impactSpeed:4.0, impactSwirlSpeed:0.12, impactNoise:0.1,  impactLife:2.0, muzzleType:"blob",     muzzleSize:40, muzzleCount:18, explodeColors:["#ffee00","#ff4400","rgba(30,25,0,0.2)"],      trailType:"blob",     trailRate:1.0, trailSize:22 },
+      world_slayer:      { color:"#ff0000", color2:"#220000", impactType:"blob",     impactSize:30, impactCount:24, impactSpeed:5.0, impactSwirlSpeed:0.10, impactNoise:0.08, impactLife:2.5, muzzleType:"blob",     muzzleSize:50, muzzleCount:20, explodeColors:["#ff2200","#110000","rgba(30,0,0,0.25)"],      trailType:"blob",     trailRate:1.0, trailSize:28 },
+      meteor_strike:     { color:"#ff6600", color2:"#ff2200", impactType:"blob",     impactSize:18, impactCount:20, impactSpeed:4.0, impactSwirlSpeed:0.18, impactNoise:0.2,  impactLife:1.5, muzzleType:"blob",     muzzleSize:25, muzzleCount:14, explodeColors:["#ff5500","#ff1100","rgba(25,10,0,0.15)"],     trailType:"blob",     trailRate:1.0, trailSize:16 },
+      meteor_rain:       { color:"#ff4400", color2:"#ff8800", impactType:"blob",     impactSize:16, impactCount:18, impactSpeed:3.5, impactSwirlSpeed:0.18, impactNoise:0.18, impactLife:1.4, muzzleType:"blob",     muzzleSize:22, muzzleCount:12, explodeColors:["#ff4400","#ff8800","rgba(20,8,0,0.12)"],      trailType:"fluid",    trailRate:1.0, trailSize:14 },
+      bazooka:           { color:"#ff6600", color2:"#ffcc00", impactType:"blob",     impactSize:14, impactCount:14, impactSpeed:3.2, impactSwirlSpeed:0.22, impactNoise:0.18, impactLife:1.1, muzzleType:"blob",     muzzleSize:22, muzzleCount:8,  explodeColors:["#ff8800","#ff2200","rgba(30,15,5,0.15)"],     trailType:"glow",     trailRate:0.9, trailSize:10 },
+
+      // ── WATER / TSUNAMI ───────────────────────────────────
+      tsunami_scroll:    { color:"#22aaff", color2:"#aaddff", impactType:"fluid",    impactSize:16, impactCount:18, impactSpeed:2.5, impactSwirlSpeed:0.28, impactNoise:0.3,  impactLife:1.4, muzzleType:"fluid",    muzzleSize:22, muzzleCount:12, explodeColors:["#33bbff","#aaeeff","rgba(0,15,30,0.12)"],     trailType:"fluid",    trailRate:0.9, trailSize:14 },
+      glacier_crash:     { color:"#99ddff", color2:"#ffffff", impactType:"blob",     impactSize:18, impactCount:14, impactSpeed:3.0, impactSwirlSpeed:0.08, impactNoise:0.1,  impactLife:1.3, muzzleType:"blob",     muzzleSize:24, muzzleCount:10, explodeColors:["#bbddff","#ffffff","rgba(5,20,40,0.12)"],     trailType:"fluid",    trailRate:0.8, trailSize:16 },
+
+      // ── DEFAULT FALLBACK ──────────────────────────────────
+      default:           { color: ownerColor, color2:"#ffffff", impactType:"blob",   impactSize:10, impactCount:10, impactSpeed:2.5, impactSwirlSpeed:0.20, impactNoise:0.15, impactLife:0.9, muzzleType:"blob",     muzzleSize:14, muzzleCount:8,  explodeColors:[ownerColor,"#ffffff","rgba(15,15,15,0.08)"],   trailType:"fluid",    trailRate:0.7, trailSize:9  },
+    };
+    return presets[weaponType] || presets.default;
+  }
+
+  private spawnMuzzleFlash(x: number, y: number, weaponType: string, ownerColor: string) {
+    const vfx = this.getWeaponVfx(weaponType, ownerColor);
+    this.createParticles(x, y, vfx.color, vfx.muzzleCount, 2.5, {
+      type: vfx.muzzleType, size: vfx.muzzleSize, spread: 1.4,
+      life: 0.35, additive: true, vSize: -vfx.muzzleSize * 0.04,
+      color2: vfx.color2, noise: 0.08, swirlSpeed: 0.1, drag: 0.88, gravity: -0.02,
+    });
+    // White hot core flash
+    this.createParticles(x, y, "#ffffff", 4, 1.0, {
+      type: "glow", size: vfx.muzzleSize * 0.7, spread: 0.8,
+      life: 0.2, additive: true, vSize: -0.3, drag: 0.9, gravity: 0,
+    });
+  }
+
+  private spawnWeaponImpact(
+    x: number, y: number,
+    weaponType: string, ownerColor: string,
+    impactVelX: number, impactVelY: number,
+  ) {
+    const vfx = this.getWeaponVfx(weaponType, ownerColor);
+    const speed = Math.sqrt(impactVelX * impactVelX + impactVelY * impactVelY) + 0.01;
+    const nx = impactVelX / speed;
+    const ny = impactVelY / speed;
+
+    // Primary splash blobs/fluid
+    this.createParticles(x, y, vfx.color, vfx.impactCount, vfx.impactSpeed, {
+      type: vfx.impactType, size: vfx.impactSize,
+      drag: 0.91, gravity: 0.12,
+      vSize: -vfx.impactSize * 0.022,
+      additive: true, life: vfx.impactLife,
+      color2: vfx.color2, noise: vfx.impactNoise,
+      swirlSpeed: vfx.impactSwirlSpeed,
+      vx: -nx * speed * 0.35, vy: -ny * speed * 0.35,
+    });
+
+    // White hot specular pop
+    this.createParticles(x, y, "#ffffff", Math.ceil(vfx.impactCount * 0.5), vfx.impactSpeed * 1.6, {
+      type: "spark", size: vfx.impactSize * 0.45, chromatic: true,
+      drag: 0.85, gravity: 0.22, additive: true, life: vfx.impactLife * 0.45,
+      vx: -nx * speed * 0.5, vy: -ny * speed * 0.5,
+    });
+
+    // Ambient bloom ring
+    this.createParticles(x, y, vfx.color, 2, 0.3, {
+      type: "ring", size: vfx.impactSize * 1.4,
+      drag: 0.99, gravity: 0, additive: true,
+      life: vfx.impactLife * 0.5, vSize: vfx.impactSize * 0.08,
+    });
+  }
+
+  private spawnWeaponExplosion(
+    x: number, y: number,
+    weaponType: string, ownerColor: string,
+    radius: number,
+  ) {
+    const vfx = this.getWeaponVfx(weaponType, ownerColor);
+    const [coreColor, emberColor, smokeColor] = vfx.explodeColors;
+    const scale = radius / 150;
+
+    // Flash
+    this.effects.push({ x, y, radius: radius * 0.55, life: 7, maxLife: 7, color: "rgba(255,255,255,0.95)" });
+
+    // Color shockwave rings
+    for (let i = 0; i < 3; i++) {
+      this.effects.push({
+        x, y, radius: radius * (0.4 + i * 0.45),
+        life: 12 + i * 7, maxLife: 12 + i * 7,
+        color: i === 0
+          ? coreColor.replace('#','rgba(').replace(/^rgba\(([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})\)$/, (_,r,g,b)=>`rgba(${parseInt(r,16)},${parseInt(g,16)},${parseInt(b,16)},0.8)`)
+          : i === 1 ? `${coreColor}99` : `${coreColor}44`,
+      });
+    }
+
+    // Fluid blob cores
+    this.createParticles(x, y, coreColor, Math.round(18 * scale), 4.0 * Math.sqrt(scale), {
+      drag: 0.91, gravity: 0.07, type: "blob", size: 16 * scale,
+      vSize: -0.22 * scale, additive: true, life: 1.3,
+      color2: vfx.color2, noise: 0.15, swirlSpeed: 0.16,
+    });
+
+    // Radial sparks
+    this.createParticles(x, y, "#ffffff", Math.round(22 * scale), 7.5 * Math.sqrt(scale), {
+      drag: 0.87, gravity: 0.28, type: "spark", size: 4 * scale,
+      additive: true, life: 0.55, chromatic: true,
+    });
+
+    // Chromatic streamers
+    this.createParticles(x, y, coreColor, Math.round(10 * scale), 5.5 * Math.sqrt(scale), {
+      drag: 0.93, gravity: 0.1, type: "streamer", size: 7 * scale,
+      additive: true, life: 0.85, color2: vfx.color2,
+    });
+
+    // Ember float
+    this.createParticles(x, y, emberColor, Math.round(28 * scale), 3.2 * Math.sqrt(scale), {
+      drag: 0.97, gravity: -0.02, type: "fluid", size: 6 * scale,
+      vSize: -0.07 * scale, additive: true, life: 1.8,
+      color2: coreColor, noise: 0.07,
+    });
+
+    // Smoke back-fill
+    this.createParticles(x, y, smokeColor, Math.round(9 * scale), 0.85, {
+      drag: 0.986, gravity: -0.035, type: "smoke", size: 18 * scale,
+      vSize: 0.38 * scale, life: 2.4, noise: 0.05,
+    });
   }
 
   private removeProjectile(projectile: Matter.Body) {
@@ -3662,31 +3802,28 @@ export class GameEngine {
     this.projectiles.forEach((p) => {
       const pData = p as any;
 
-      // Trail effects
+      // Trail effects — per-weapon typed particles
       if (!pData.trailPoints) pData.trailPoints = [];
       pData.trailPoints.push({ x: p.position.x, y: p.position.y });
-      if (pData.trailPoints.length > 10) pData.trailPoints.shift();
+      if (pData.trailPoints.length > 12) pData.trailPoints.shift();
 
-      if (Math.random() > 0.4) {
-        const pColor = pData.isDragonBreath
-          ? "#f97316"
-          : (p.render.fillStyle as string);
-        this.createParticles(p.position.x, p.position.y, pColor, 1, 1.2, {
-          type: pData.isDragonBreath ? "smoke" : "fluid",
-          size: pData.isDragonBreath ? 35 : (pData.circleRadius || 8),
-          gravity: pData.isDragonBreath ? -0.15 : 0.02,
-          life: pData.isDragonBreath ? 1.5 : 0.6,
-          drag: 0.97,
-          additive: true,
-          vSize: -0.1
-        });
+      {
+        const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
+        const ownerColor = shooter?.data.color || "#ffffff";
+        const vfx = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
 
-        if (pData.isElectricity || pData.isPlasma) {
-          this.createParticles(p.position.x, p.position.y, "#fff", 2, 3, {
-            type: "glow",
-            size: 8,
-            life: 0.2,
-            additive: true
+        if (Math.random() < vfx.trailRate) {
+          this.createParticles(p.position.x, p.position.y, vfx.color, 1, 0.5, {
+            type: vfx.trailType,
+            size: vfx.trailSize,
+            color2: vfx.color2,
+            gravity: vfx.trailType === "smoke" ? -0.12 : 0.03,
+            life: vfx.trailType === "smoke" ? 1.2 : 0.5,
+            drag: vfx.trailType === "smoke" ? 0.975 : 0.94,
+            additive: true,
+            vSize: -(vfx.trailSize * 0.025),
+            noise: vfx.trailType === "fluid" || vfx.trailType === "blob" ? 0.06 : 0,
+            swirlSpeed: vfx.trailType === "fluid" || vfx.trailType === "blob" ? 0.08 : 0,
           });
         }
       }
@@ -3817,7 +3954,7 @@ export class GameEngine {
         Date.now() - pData.lastEcho > 500
       ) {
         // Pulse effect
-        this.explode(p.position.x, p.position.y, 100, 20, pData.ownerId);
+        this.explode(p.position.x, p.position.y, 100, 20, pData.ownerId, pData.weaponType);
         pData.echoed = true;
       }
 
@@ -3895,7 +4032,7 @@ export class GameEngine {
       ) {
         this.removeProjectile(p);
       } else if ((p as any).timer && Date.now() > (p as any).timer) {
-        this.explode(p.position.x, p.position.y, 150, 60, (p as any).ownerId);
+        this.explode(p.position.x, p.position.y, 150, 60, (p as any).ownerId, (p as any).weaponType);
         this.removeProjectile(p);
       }
 
@@ -5149,7 +5286,11 @@ export class GameEngine {
       const pData = p as any;
       if (!pData.trailPoints || pData.trailPoints.length < 2) return;
 
-      const color = (p.render.fillStyle as string) || "#fff";
+      const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
+      const ownerColor = shooter?.data.color || (p.render.fillStyle as string) || "#ffffff";
+      const vfx = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
+      const color = vfx.color;
+      const color2 = vfx.color2;
       const radius = p.circleRadius || 6;
       const pts = pData.trailPoints;
 
@@ -5167,26 +5308,26 @@ export class GameEngine {
       });
       this.ctx.stroke();
 
-      // Pass 2: Chromatic red offset
+      // Pass 2: Chromatic color2 offset (warm/cool based on weapon)
       this.ctx.globalAlpha = 0;
       this.ctx.beginPath();
       pts.forEach((pt: any, i: number) => {
         const t = i / pts.length;
         this.ctx.lineWidth = radius * t * 2.5;
-        this.ctx.globalAlpha = t * 0.18;
-        this.ctx.strokeStyle = "#ff3366";
+        this.ctx.globalAlpha = t * 0.22;
+        this.ctx.strokeStyle = color2 || "#ff3366";
         if (i === 0) this.ctx.moveTo(pt.x - 2, pt.y);
         else this.ctx.lineTo(pt.x - 2, pt.y);
       });
       this.ctx.stroke();
 
-      // Pass 3: Chromatic blue offset
+      // Pass 3: Main color offset
       this.ctx.beginPath();
       pts.forEach((pt: any, i: number) => {
         const t = i / pts.length;
         this.ctx.lineWidth = radius * t * 2.5;
-        this.ctx.globalAlpha = t * 0.18;
-        this.ctx.strokeStyle = "#33aaff";
+        this.ctx.globalAlpha = t * 0.22;
+        this.ctx.strokeStyle = color;
         if (i === 0) this.ctx.moveTo(pt.x + 2, pt.y);
         else this.ctx.lineTo(pt.x + 2, pt.y);
       });
@@ -5458,8 +5599,14 @@ export class GameEngine {
 
     this.projectiles.forEach((p) => {
       const pData = p as any;
-      const color = (p.render.fillStyle as string) || "white";
       const now = Date.now();
+
+      // Per-weapon color via VFX lookup
+      const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
+      const ownerColor = shooter?.data.color || (p.render.fillStyle as string) || "#ffffff";
+      const vfx = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
+      const color = vfx.color;
+      const color2 = vfx.color2;
       
       this.ctx.save();
       this.ctx.globalCompositeOperation = "lighter";
