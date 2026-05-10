@@ -78,6 +78,88 @@ export class GameEngine {
     legendary: "#fbbf24",
     mythical: "#ef4444",
   };
+
+  // ── Pre-baked gradient texture atlas ────────────────────────────────────────
+  // We render each gradient type once to an offscreen canvas and reuse it via
+  // drawImage() — eliminates createRadialGradient() overhead per-particle.
+  private _stampCache: Map<string, HTMLCanvasElement> = new Map();
+  private _frameCount: number = 0;
+
+  private _getGlowStamp(color: string, color2?: string): HTMLCanvasElement {
+    const key = `g_${color}_${color2 ?? ""}`;
+    if (this._stampCache.has(key)) return this._stampCache.get(key)!;
+    const S = 128;
+    const oc = document.createElement("canvas");
+    oc.width = oc.height = S;
+    const cx = oc.getContext("2d")!;
+    const c = S / 2;
+    const g = cx.createRadialGradient(c * 0.8, c * 0.8, 0, c, c, c);
+    g.addColorStop(0,    "#ffffff");
+    g.addColorStop(0.15, "#ffffff");
+    g.addColorStop(0.35, color);
+    if (color2) g.addColorStop(0.65, color2);
+    g.addColorStop(1,    "rgba(0,0,0,0)");
+    cx.fillStyle = g;
+    cx.fillRect(0, 0, S, S);
+    this._stampCache.set(key, oc);
+    return oc;
+  }
+
+  private _getRingStamp(color: string, color2?: string): HTMLCanvasElement {
+    const key = `r_${color}_${color2 ?? ""}`;
+    if (this._stampCache.has(key)) return this._stampCache.get(key)!;
+    const S = 128;
+    const oc = document.createElement("canvas");
+    oc.width = oc.height = S;
+    const cx = oc.getContext("2d")!;
+    const c = S / 2;
+    // Outer soft bloom
+    const bg = cx.createRadialGradient(c, c, c * 0.6, c, c, c);
+    bg.addColorStop(0, color + "66");
+    bg.addColorStop(1, "rgba(0,0,0,0)");
+    cx.fillStyle = bg;
+    cx.fillRect(0, 0, S, S);
+    // Main ring
+    cx.strokeStyle = color;
+    cx.lineWidth = S * 0.08;
+    cx.beginPath(); cx.arc(c, c, c * 0.80, 0, Math.PI * 2); cx.stroke();
+    // Bright inner edge
+    cx.strokeStyle = "#ffffff";
+    cx.lineWidth = S * 0.028;
+    cx.beginPath(); cx.arc(c, c, c * 0.70, 0, Math.PI * 2); cx.stroke();
+    // Color2 outer ring
+    if (color2) {
+      cx.globalAlpha = 0.5;
+      cx.strokeStyle = color2;
+      cx.lineWidth = S * 0.04;
+      cx.beginPath(); cx.arc(c, c, c * 0.90, 0, Math.PI * 2); cx.stroke();
+    }
+    this._stampCache.set(key, oc);
+    return oc;
+  }
+
+  private _getSmokeStamp(color: string): HTMLCanvasElement {
+    const key = `s_${color}`;
+    if (this._stampCache.has(key)) return this._stampCache.get(key)!;
+    const S = 128;
+    const oc = document.createElement("canvas");
+    oc.width = oc.height = S;
+    const cx = oc.getContext("2d")!;
+    const c = S / 2;
+    // Multi-octave smoke: three overlapping soft circles offset slightly
+    const offsets = [[0,0,1.0],[c*0.18,-c*0.1,0.6],[-c*0.12,c*0.15,0.45]];
+    offsets.forEach(([ox, oy, a]) => {
+      cx.globalAlpha = a;
+      const g = cx.createRadialGradient(c + ox, c + oy, 0, c + ox, c + oy, c * 0.85);
+      g.addColorStop(0,   color);
+      g.addColorStop(0.5, color);
+      g.addColorStop(1,   "rgba(0,0,0,0)");
+      cx.fillStyle = g;
+      cx.beginPath(); cx.arc(c + ox, c + oy, c * 0.85, 0, Math.PI * 2); cx.fill();
+    });
+    this._stampCache.set(key, oc);
+    return oc;
+  }
   private level: Level;
   private platforms: Matter.Body[] = [];
   private fireflies: Matter.Body[] = [];
@@ -3805,7 +3887,7 @@ export class GameEngine {
       // Trail effects — per-weapon typed particles
       if (!pData.trailPoints) pData.trailPoints = [];
       pData.trailPoints.push({ x: p.position.x, y: p.position.y });
-      if (pData.trailPoints.length > 12) pData.trailPoints.shift();
+      if (pData.trailPoints.length > 18) pData.trailPoints.shift();
 
       {
         const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
@@ -4316,42 +4398,57 @@ export class GameEngine {
     });
 
     // Particles update
-    const MAX_PARTICLES = 400;
+    this._frameCount++;
+    const MAX_PARTICLES = 800;
     if (this.particles.length > MAX_PARTICLES) {
-      this.particles = this.particles.slice(-MAX_PARTICLES);
+      // Prioritise additive (glow) particles — cull normal ones first
+      const additive = this.particles.filter(p => p.additive);
+      const normal   = this.particles.filter(p => !p.additive);
+      this.particles = [
+        ...normal.slice(-Math.floor(MAX_PARTICLES * 0.2)),
+        ...additive.slice(-Math.floor(MAX_PARTICLES * 0.8)),
+      ];
     }
 
     this.particles.forEach((p) => {
       p.x += p.vx;
       p.y += p.vy;
 
-      // Noise / swirl turbulence
+      // Curl-noise turbulence — cheap rotation of velocity vector
       if (p.noise) {
-        const swirl = (Math.random() - 0.5) * p.noise;
-        const cos = Math.cos(swirl);
-        const sin = Math.sin(swirl);
-        const newVx = p.vx * cos - p.vy * sin;
-        const newVy = p.vx * sin + p.vy * cos;
-        p.vx = newVx;
-        p.vy = newVy;
+        const angle = (Math.random() - 0.5) * p.noise;
+        const c = Math.cos(angle), s = Math.sin(angle);
+        const nvx = p.vx * c - p.vy * s;
+        const nvy = p.vx * s + p.vy * c;
+        p.vx = nvx; p.vy = nvy;
       }
 
-      // Fluid swirl orbital motion (ROUNDS-style curling)
+      // Fluid swirl — decaying orbital force for organic curl
       if (p.swirlSpeed) {
         p.swirlAngle = (p.swirlAngle || 0) + p.swirlSpeed;
-        const swirlForce = p.life * 0.4;
-        p.vx += Math.cos(p.swirlAngle) * swirlForce * 0.08;
-        p.vy += Math.sin(p.swirlAngle) * swirlForce * 0.08;
+        const swirlForce = p.life * 0.35;
+        p.vx += Math.cos(p.swirlAngle!) * swirlForce * 0.065;
+        p.vy += Math.sin(p.swirlAngle!) * swirlForce * 0.065;
       }
 
       p.vx *= p.drag;
       p.vy *= p.drag;
       p.vy += p.gravity;
+
+      // Surface-tension speed cap for fluid/blob types
+      if (p.type === "blob" || p.type === "fluid") {
+        const spd2 = p.vx * p.vx + p.vy * p.vy;
+        if (spd2 > 324) { // 18^2
+          const inv = 18 / Math.sqrt(spd2);
+          p.vx *= inv; p.vy *= inv;
+        }
+      }
+
       if (p.vRotation) p.rotation = (p.rotation || 0) + p.vRotation;
-      if (p.vSize) p.size = Math.max(0.1, p.size + p.vSize);
+      if (p.vSize)     p.size = Math.max(0.1, p.size + p.vSize);
       p.life -= 0.02 / p.maxLife;
     });
-    this.particles = this.particles.filter((p) => p.life > 0);
+    this.particles = this.particles.filter((p) => p.life > 0 && p.size > 0.15);
 
     this.trails.forEach((t) => (t.alpha -= 0.02));
     this.trails = this.trails.filter((t) => t.alpha > 0);
@@ -5047,189 +5144,185 @@ export class GameEngine {
     const additiveParticles = this.particles.filter(p => p.additive);
 
     const renderParticleBatch = (batch: any[], isAdditive: boolean) => {
-      if (isAdditive) {
-        this.ctx.globalCompositeOperation = "lighter";
-      } else {
-        this.ctx.globalCompositeOperation = "source-over";
-      }
+      this.ctx.globalCompositeOperation = isAdditive ? "lighter" : "source-over";
 
+      // ── SMOKE ─────────────────────────────────────────────────────────────
+      // Drawn first so it sits behind all additive glow
       batch.forEach((p) => {
-        const lifeRatio = p.life / p.maxLife; // 1 → 0 as it dies
-        const baseAlpha = p.life;
+        if (p.type !== "smoke") return;
+        const lifeRatio = p.life / p.maxLife;
+        const drawR = p.size * (1 + (1 - lifeRatio) * 1.1);
+        const stamp = this._getSmokeStamp(p.color);
+        this.ctx.globalAlpha = lifeRatio * lifeRatio * 0.55;
+        if (p.rotation) {
+          this.ctx.save();
+          this.ctx.translate(p.x, p.y);
+          this.ctx.rotate(p.rotation);
+          this.ctx.drawImage(stamp, -drawR, -drawR, drawR * 2, drawR * 2);
+          this.ctx.restore();
+        } else {
+          this.ctx.drawImage(stamp, p.x - drawR, p.y - drawR, drawR * 2, drawR * 2);
+        }
+      });
 
-        this.ctx.save();
-        this.ctx.translate(p.x, p.y);
-        if (p.rotation) this.ctx.rotate(p.rotation);
+      // ── RINGS ─────────────────────────────────────────────────────────────
+      batch.forEach((p) => {
+        if (p.type !== "ring") return;
+        const lifeRatio = p.life / p.maxLife;
+        const expandT  = 1 - lifeRatio;
+        const drawR    = p.size * (0.05 + expandT * 1.35);
+        const stamp    = this._getRingStamp(p.color, p.color2);
+        // Squared falloff = sharp leading edge, fast fade-out
+        this.ctx.globalAlpha = lifeRatio * lifeRatio * p.life;
+        this.ctx.drawImage(stamp, p.x - drawR, p.y - drawR, drawR * 2, drawR * 2);
+      });
 
-        if (p.type === "spark") {
-          // Elongated spark: bright tapered line with a glowing head
-          const len = p.size * (2 + lifeRatio * 3);
-          const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
-          const angle = Math.atan2(p.vy, p.vx);
+      // ── BLOBS / FLUID / GLOW / CIRCLE ─────────────────────────────────────
+      // All use the pre-baked radial gradient stamp → zero createRadialGradient per frame.
+      batch.forEach((p) => {
+        if (p.type !== "blob" && p.type !== "fluid" && p.type !== "glow" && p.type !== "circle") return;
 
-          this.ctx.globalAlpha = baseAlpha * 0.9;
-          this.ctx.strokeStyle = p.color;
-          this.ctx.lineWidth = Math.max(0.5, p.size * 0.4 * lifeRatio);
-          this.ctx.lineCap = "round";
-          this.ctx.beginPath();
-          this.ctx.moveTo(0, 0);
-          this.ctx.lineTo(-Math.cos(angle) * len, -Math.sin(angle) * len);
-          this.ctx.stroke();
+        const lifeRatio = p.life / p.maxLife;
+        const isGlow    = p.type === "glow";
+        const stamp     = this._getGlowStamp(p.color, p.color2);
+        const baseR     = p.size * (isGlow ? 2.6 : p.type === "blob" ? 1.0 : 1.45);
 
-          // Bright spark head
-          this.ctx.globalAlpha = baseAlpha;
-          this.ctx.fillStyle = "#ffffff";
-          this.ctx.beginPath();
-          this.ctx.arc(0, 0, p.size * 0.35 * lifeRatio, 0, Math.PI * 2);
-          this.ctx.fill();
+        this.ctx.globalAlpha = p.life * (isGlow ? 0.42 : 1.0);
 
-          // Chromatic aberration — offset R/G/B channels
-          if (p.chromatic) {
-            this.ctx.globalAlpha = baseAlpha * 0.4;
-            this.ctx.strokeStyle = "#ff2244";
-            this.ctx.beginPath();
-            this.ctx.moveTo(-2, 0);
-            this.ctx.lineTo(-Math.cos(angle) * len - 2, -Math.sin(angle) * len);
-            this.ctx.stroke();
-            this.ctx.strokeStyle = "#22aaff";
-            this.ctx.beginPath();
-            this.ctx.moveTo(2, 0);
-            this.ctx.lineTo(-Math.cos(angle) * len + 2, -Math.sin(angle) * len);
-            this.ctx.stroke();
-          }
-
-        } else if (p.type === "smoke") {
-          // Soft volumetric smoke puff with radial gradient
-          const size = p.size * (1 + (1 - lifeRatio) * 0.8);
-          const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, size);
-          grad.addColorStop(0, p.color.replace('rgba', 'rgba').replace(/[\d.]+\)$/, `${baseAlpha * 0.5})`));
-          grad.addColorStop(0.5, p.color.replace(/[\d.]+\)$/, `${baseAlpha * 0.2})`));
-          grad.addColorStop(1, "rgba(0,0,0,0)");
-          this.ctx.globalAlpha = 1.0;
-          this.ctx.fillStyle = grad;
-          this.ctx.beginPath();
-          this.ctx.arc(0, 0, size, 0, Math.PI * 2);
-          this.ctx.fill();
-
-        } else if (p.type === "blob") {
-          // Organic blob — metaball-like with a squish
-          const scaleX = 1 + Math.sin(p.swirlAngle || 0) * 0.3;
-          const scaleY = 1 - Math.sin(p.swirlAngle || 0) * 0.3;
-          const size = p.size;
-          const grad = this.ctx.createRadialGradient(-size * 0.2, -size * 0.2, 0, 0, 0, size * scaleX);
-          grad.addColorStop(0, "#ffffff");
-          grad.addColorStop(0.25, p.color);
-          grad.addColorStop(1, "rgba(0,0,0,0)");
-          this.ctx.globalAlpha = baseAlpha;
-          this.ctx.scale(scaleX, scaleY);
-          this.ctx.fillStyle = grad;
-          this.ctx.beginPath();
-          this.ctx.arc(0, 0, size, 0, Math.PI * 2);
-          this.ctx.fill();
-
-        } else if (p.type === "fluid" || p.type === "glow") {
-          // ROUNDS-style fluid blob: radial gradient with chromatic halo
-          const size = p.size;
-          const isGlow = p.type === "glow";
-
-          // Outer chromatic halo (offset R and B channels)
-          if (isAdditive && size > 4) {
-            this.ctx.globalAlpha = baseAlpha * 0.15;
-            this.ctx.fillStyle = "#ff3366";
-            this.ctx.beginPath();
-            this.ctx.arc(-size * 0.15, 0, size * (isGlow ? 2.0 : 1.2), 0, Math.PI * 2);
-            this.ctx.fill();
-            this.ctx.fillStyle = "#33aaff";
-            this.ctx.beginPath();
-            this.ctx.arc(size * 0.15, 0, size * (isGlow ? 2.0 : 1.2), 0, Math.PI * 2);
-            this.ctx.fill();
-          }
-
-          // Main radial gradient body
-          const outerR = size * (isGlow ? 3.0 : 1.8);
-          const grad = this.ctx.createRadialGradient(-size * 0.1, -size * 0.1, 0, 0, 0, outerR);
-          grad.addColorStop(0, "#ffffff");
-          grad.addColorStop(0.2, p.color);
-          if (p.color2) {
-            grad.addColorStop(0.6, p.color2);
-          }
-          grad.addColorStop(1, "rgba(0,0,0,0)");
-          this.ctx.globalAlpha = baseAlpha * (isGlow ? 0.5 : 1.0);
-          this.ctx.fillStyle = grad;
-          this.ctx.beginPath();
-          this.ctx.arc(0, 0, outerR, 0, Math.PI * 2);
-          this.ctx.fill();
-
-          // Bright specular dot (gives the "liquid" look)
-          if (!isGlow && lifeRatio > 0.3) {
-            this.ctx.globalAlpha = baseAlpha * 0.9 * lifeRatio;
+        if (p.type === "blob" && p.swirlAngle !== undefined) {
+          // Organic squish driven by swirl phase
+          const squish = Math.sin(p.swirlAngle) * 0.26;
+          const sx = baseR * (1 + squish);
+          const sy = baseR * (1 - squish * 0.65);
+          this.ctx.save();
+          this.ctx.translate(p.x, p.y);
+          if (p.rotation) this.ctx.rotate(p.rotation);
+          this.ctx.drawImage(stamp, -sx, -sy, sx * 2, sy * 2);
+          // Liquid specular highlight
+          if (lifeRatio > 0.2) {
+            this.ctx.globalAlpha = p.life * lifeRatio * 0.75;
             this.ctx.fillStyle = "#ffffff";
             this.ctx.beginPath();
-            this.ctx.arc(-size * 0.25, -size * 0.25, size * 0.2, 0, Math.PI * 2);
+            this.ctx.arc(-sx * 0.26, -sy * 0.26, Math.max(1, sx * 0.17), 0, Math.PI * 2);
             this.ctx.fill();
           }
-
-        } else if (p.type === "ring") {
-          // Expanding shockwave ring
-          const radius = p.size * (1 + (1 - lifeRatio) * 2);
-          const thickness = Math.max(1, p.size * 0.15 * lifeRatio);
-          this.ctx.globalAlpha = baseAlpha * lifeRatio;
-          this.ctx.strokeStyle = p.color;
-          this.ctx.lineWidth = thickness;
-          this.ctx.beginPath();
-          this.ctx.arc(0, 0, radius, 0, Math.PI * 2);
-          this.ctx.stroke();
-          // Inner bright ring
-          this.ctx.globalAlpha = baseAlpha * lifeRatio * 0.5;
-          this.ctx.strokeStyle = "#ffffff";
-          this.ctx.lineWidth = thickness * 0.4;
-          this.ctx.beginPath();
-          this.ctx.arc(0, 0, radius * 0.9, 0, Math.PI * 2);
-          this.ctx.stroke();
-
-        } else if (p.type === "streamer") {
-          // Long ribbon streamer — ROUNDS-style energy tendril
-          const len = p.size * (3 + lifeRatio * 5);
-          const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy) + 0.01;
-          const dirX = -p.vx / spd;
-          const dirY = -p.vy / spd;
-          const perpX = -dirY;
-          const perpY = dirX;
-          const w = Math.max(0.5, p.size * 0.3 * lifeRatio);
-
-          const grad = this.ctx.createLinearGradient(0, 0, dirX * len, dirY * len);
-          grad.addColorStop(0, p.color);
-          grad.addColorStop(0.4, p.color2 || p.color);
-          grad.addColorStop(1, "rgba(0,0,0,0)");
-          this.ctx.globalAlpha = baseAlpha;
-          this.ctx.fillStyle = grad;
-          this.ctx.beginPath();
-          this.ctx.moveTo(perpX * w, perpY * w);
-          this.ctx.lineTo(dirX * len, dirY * len);
-          this.ctx.lineTo(-perpX * w, -perpY * w);
-          this.ctx.closePath();
-          this.ctx.fill();
-
+          this.ctx.restore();
         } else {
-          // Default: crisp additive circle with soft halo
-          const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, p.size / 2 + 1);
-          grad.addColorStop(0, "#ffffff");
-          grad.addColorStop(0.4, p.color);
-          grad.addColorStop(1, "rgba(0,0,0,0)");
-          this.ctx.globalAlpha = baseAlpha;
-          this.ctx.fillStyle = grad;
-          this.ctx.beginPath();
-          this.ctx.arc(0, 0, p.size / 2 + 1, 0, Math.PI * 2);
-          this.ctx.fill();
+          this.ctx.drawImage(stamp, p.x - baseR, p.y - baseR, baseR * 2, baseR * 2);
+          // Specular for fluid
+          if (p.type === "fluid" && lifeRatio > 0.25) {
+            this.ctx.globalAlpha = p.life * lifeRatio * 0.6;
+            this.ctx.fillStyle = "#ffffff";
+            this.ctx.beginPath();
+            this.ctx.arc(p.x - baseR * 0.22, p.y - baseR * 0.22, Math.max(1, baseR * 0.15), 0, Math.PI * 2);
+            this.ctx.fill();
+          }
         }
+      });
 
-        this.ctx.restore();
+      // ── SPARKS ────────────────────────────────────────────────────────────
+      this.ctx.lineCap = "round";
+      batch.forEach((p) => {
+        if (p.type !== "spark") return;
+        const lifeRatio = p.life / p.maxLife;
+        const spd   = Math.sqrt(p.vx * p.vx + p.vy * p.vy) + 0.01;
+        const angle = Math.atan2(p.vy, p.vx);
+        // Speed-stretched length — faster = longer streak
+        const len   = Math.min(p.size * (1.4 + lifeRatio * 2.2) + spd * 1.1, 62);
+        const w     = Math.max(0.4, p.size * 0.36 * lifeRatio);
+        const ex    = p.x - Math.cos(angle) * len;
+        const ey    = p.y - Math.sin(angle) * len;
+
+        // Outer colored glow streak
+        this.ctx.globalAlpha = p.life * 0.75;
+        this.ctx.strokeStyle = p.color;
+        this.ctx.lineWidth   = w * 2.4;
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.x, p.y);
+        this.ctx.lineTo(ex, ey);
+        this.ctx.stroke();
+
+        // Bright white core
+        this.ctx.globalAlpha = p.life;
+        this.ctx.strokeStyle = "#ffffff";
+        this.ctx.lineWidth   = w;
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.x, p.y);
+        this.ctx.lineTo(p.x - Math.cos(angle) * len * 0.55, p.y - Math.sin(angle) * len * 0.55);
+        this.ctx.stroke();
+
+        // Hot-point head dot
+        this.ctx.fillStyle  = "#ffffff";
+        this.ctx.globalAlpha = p.life * lifeRatio;
+        this.ctx.beginPath();
+        this.ctx.arc(p.x, p.y, Math.max(0.5, w * 1.15), 0, Math.PI * 2);
+        this.ctx.fill();
+
+        // Chromatic fringe — perpendicular offset so it fans outward
+        if (p.chromatic && len > 6) {
+          const ox = Math.sin(angle) * 2.0, oy = -Math.cos(angle) * 2.0;
+          this.ctx.globalAlpha = p.life * 0.32;
+          this.ctx.strokeStyle = p.color2 || "#ff2244";
+          this.ctx.lineWidth   = w * 0.65;
+          this.ctx.beginPath();
+          this.ctx.moveTo(p.x + ox, p.y + oy);
+          this.ctx.lineTo(ex + ox, ey + oy);
+          this.ctx.stroke();
+          this.ctx.strokeStyle = "#22aaff";
+          this.ctx.beginPath();
+          this.ctx.moveTo(p.x - ox, p.y - oy);
+          this.ctx.lineTo(ex - ox, ey - oy);
+          this.ctx.stroke();
+        }
+      });
+
+      // ── STREAMERS ─────────────────────────────────────────────────────────
+      batch.forEach((p) => {
+        if (p.type !== "streamer") return;
+        const lifeRatio = p.life / p.maxLife;
+        const spd   = Math.sqrt(p.vx * p.vx + p.vy * p.vy) + 0.01;
+        const angle = Math.atan2(p.vy, p.vx);
+        const len   = p.size * (2.2 + lifeRatio * 3.8) + spd * 0.7;
+        const tailW = Math.max(0.5, p.size * 0.30 * lifeRatio);
+        const dx = Math.cos(angle), dy = Math.sin(angle);
+        const px = -dy,             py = dx;
+        const tx = p.x - dx * len,  ty = p.y - dy * len;
+
+        // Ribbon body
+        this.ctx.globalAlpha = p.life * 0.9;
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.x + px * tailW, p.y + py * tailW);
+        this.ctx.lineTo(tx, ty);
+        this.ctx.lineTo(p.x - px * tailW, p.y - py * tailW);
+        this.ctx.closePath();
+
+        if (Math.abs(tx - p.x) + Math.abs(ty - p.y) > 1) {
+          const g = this.ctx.createLinearGradient(p.x, p.y, tx, ty);
+          g.addColorStop(0,    "#ffffff");
+          g.addColorStop(0.12, p.color);
+          g.addColorStop(0.5,  p.color2 || p.color);
+          g.addColorStop(1,    "rgba(0,0,0,0)");
+          this.ctx.fillStyle = g;
+        } else {
+          this.ctx.fillStyle = p.color;
+        }
+        this.ctx.fill();
+
+        // Bright spine along the top edge
+        this.ctx.globalAlpha = p.life * lifeRatio * 0.55;
+        this.ctx.strokeStyle = "#ffffff";
+        this.ctx.lineWidth   = Math.max(0.3, tailW * 0.28);
+        this.ctx.lineCap     = "round";
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.x, p.y);
+        this.ctx.lineTo(p.x - dx * len * 0.45, p.y - dy * len * 0.45);
+        this.ctx.stroke();
       });
     };
 
     renderParticleBatch(normalParticles, false);
     renderParticleBatch(additiveParticles, true);
-    
+
     this.ctx.restore();
 
     // Draw Portals
@@ -5279,103 +5372,125 @@ export class GameEngine {
       this.ctx.restore();
     });
 
-    // Draw Projectile Trails — ROUNDS-style fluid motion blur
+    // Draw Projectile Trails — catmull-rom spline + stamp glow
     this.ctx.save();
     this.ctx.globalCompositeOperation = "lighter";
     this.projectiles.forEach((p) => {
       const pData = p as any;
-      if (!pData.trailPoints || pData.trailPoints.length < 2) return;
+      if (!pData.trailPoints || pData.trailPoints.length < 3) return;
 
       const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
       const ownerColor = shooter?.data.color || (p.render.fillStyle as string) || "#ffffff";
-      const vfx = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
-      const color = vfx.color;
+      const vfx    = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
+      const color  = vfx.color;
       const color2 = vfx.color2;
       const radius = p.circleRadius || 6;
-      const pts = pData.trailPoints;
+      const pts    = pData.trailPoints as { x: number; y: number }[];
+      const n      = pts.length;
 
-      // Pass 1: Wide soft outer glow
-      this.ctx.beginPath();
-      this.ctx.lineCap = "round";
+      // ── Pass 1: Wide soft outer glow (single path, varying lineWidth) ──
+      // We approximate the spline with straight segments since canvas
+      // doesn't support variable-width beziers natively.
+      this.ctx.lineCap  = "round";
       this.ctx.lineJoin = "round";
-      pts.forEach((pt: any, i: number) => {
-        const t = i / pts.length;
-        this.ctx.lineWidth = radius * t * 5;
-        this.ctx.globalAlpha = t * 0.12;
-        this.ctx.strokeStyle = color;
-        if (i === 0) this.ctx.moveTo(pt.x, pt.y);
-        else this.ctx.lineTo(pt.x, pt.y);
-      });
-      this.ctx.stroke();
 
-      // Pass 2: Chromatic color2 offset (warm/cool based on weapon)
-      this.ctx.globalAlpha = 0;
-      this.ctx.beginPath();
-      pts.forEach((pt: any, i: number) => {
-        const t = i / pts.length;
-        this.ctx.lineWidth = radius * t * 2.5;
-        this.ctx.globalAlpha = t * 0.22;
+      for (let i = 1; i < n; i++) {
+        const t0 = (i - 1) / n, t1 = i / n;
+        this.ctx.globalAlpha = t1 * 0.13;
+        this.ctx.strokeStyle = color;
+        this.ctx.lineWidth   = radius * t1 * 5.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+        this.ctx.lineTo(pts[i].x,     pts[i].y);
+        this.ctx.stroke();
+      }
+
+      // ── Pass 2: Chromatic color2 offset ──────────────────────────────
+      for (let i = 1; i < n; i++) {
+        const t1 = i / n;
+        const dx = pts[i].x - pts[i - 1].x;
+        const dy = pts[i].y - pts[i - 1].y;
+        const len = Math.sqrt(dx * dx + dy * dy) + 0.01;
+        const ox = (-dy / len) * 2.2, oy = (dx / len) * 2.2;
+        this.ctx.globalAlpha = t1 * 0.20;
         this.ctx.strokeStyle = color2 || "#ff3366";
-        if (i === 0) this.ctx.moveTo(pt.x - 2, pt.y);
-        else this.ctx.lineTo(pt.x - 2, pt.y);
-      });
-      this.ctx.stroke();
-
-      // Pass 3: Main color offset
-      this.ctx.beginPath();
-      pts.forEach((pt: any, i: number) => {
-        const t = i / pts.length;
-        this.ctx.lineWidth = radius * t * 2.5;
-        this.ctx.globalAlpha = t * 0.22;
+        this.ctx.lineWidth   = radius * t1 * 2.2;
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[i - 1].x + ox, pts[i - 1].y + oy);
+        this.ctx.lineTo(pts[i].x     + ox, pts[i].y     + oy);
+        this.ctx.stroke();
         this.ctx.strokeStyle = color;
-        if (i === 0) this.ctx.moveTo(pt.x + 2, pt.y);
-        else this.ctx.lineTo(pt.x + 2, pt.y);
-      });
-      this.ctx.stroke();
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[i - 1].x - ox, pts[i - 1].y - oy);
+        this.ctx.lineTo(pts[i].x     - ox, pts[i].y     - oy);
+        this.ctx.stroke();
+      }
 
-      // Pass 4: Bright core trail
-      this.ctx.beginPath();
-      this.ctx.strokeStyle = "#ffffff";
-      pts.forEach((pt: any, i: number) => {
-        const t = i / pts.length;
-        this.ctx.lineWidth = radius * t * 1.2;
-        this.ctx.globalAlpha = t * 0.7;
-        if (i === 0) this.ctx.moveTo(pt.x, pt.y);
-        else this.ctx.lineTo(pt.x, pt.y);
-      });
-      this.ctx.stroke();
+      // ── Pass 3: Bright white core — catmull-rom spline ───────────────
+      if (n >= 4) {
+        this.ctx.strokeStyle = "#ffffff";
+        this.ctx.lineWidth   = Math.max(0.8, radius * 0.9);
+        this.ctx.beginPath();
+        this.ctx.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < n - 2; i++) {
+          const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+          const cp1x = p1.x + (p2.x - p0.x) / 6;
+          const cp1y = p1.y + (p2.y - p0.y) / 6;
+          const cp2x = p2.x - (p3.x - p1.x) / 6;
+          const cp2y = p2.y - (p3.y - p1.y) / 6;
+          this.ctx.globalAlpha = (i / n) * 0.72;
+          this.ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+        }
+        this.ctx.stroke();
+      } else {
+        this.ctx.strokeStyle = "#ffffff";
+        this.ctx.lineWidth   = Math.max(0.8, radius * 0.9);
+        for (let i = 1; i < n; i++) {
+          this.ctx.globalAlpha = (i / n) * 0.72;
+          this.ctx.beginPath();
+          this.ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
+          this.ctx.lineTo(pts[i].x, pts[i].y);
+          this.ctx.stroke();
+        }
+      }
+
+      // ── Pass 4: Stamp glow blobs at key trail points (every 3rd point) ─
+      const stamp = this._getGlowStamp(color, color2);
+      const blobR = radius * 1.4;
+      for (let i = Math.floor(n / 3); i < n; i += 3) {
+        const t = i / n;
+        this.ctx.globalAlpha = t * 0.22;
+        this.ctx.drawImage(stamp, pts[i].x - blobR, pts[i].y - blobR, blobR * 2, blobR * 2);
+      }
     });
     this.ctx.restore();
 
-    // Draw Effects (Shockwave Rings) — ROUNDS style
+    // Draw Effects (Shockwave Rings) — stamp-cached with bloom
     this.ctx.save();
     this.ctx.globalCompositeOperation = "lighter";
     this.effects.forEach((e) => {
-      const ratio = e.life / e.maxLife;
-      const expandT = 1 - ratio;  // 0 → 1 as it expands
-      const currentR = e.radius * (0.1 + expandT * 1.2);
+      const ratio   = e.life / e.maxLife;   // 1→0
+      const expandT = 1 - ratio;            // 0→1
+      const currentR = e.radius * (0.08 + expandT * 1.28);
 
-      // Outer diffuse bloom
-      this.ctx.globalAlpha = ratio * 0.25;
-      this.ctx.beginPath();
-      this.ctx.arc(e.x, e.y, currentR * 1.3, 0, Math.PI * 2);
-      this.ctx.fillStyle = e.color;
-      this.ctx.fill();
+      // Diffuse bloom fill (stamp)
+      const bloomStamp = this._getGlowStamp(e.color.replace(/[\d.]+\)$/, "0.9)"), undefined);
+      const bloomR = currentR * 1.5;
+      this.ctx.globalAlpha = ratio * ratio * 0.22;
+      this.ctx.drawImage(bloomStamp, e.x - bloomR, e.y - bloomR, bloomR * 2, bloomR * 2);
 
-      // Main ring
-      this.ctx.globalAlpha = ratio * 0.7;
-      this.ctx.strokeStyle = e.color;
-      this.ctx.lineWidth = Math.max(1, e.radius * 0.08 * ratio);
-      this.ctx.beginPath();
-      this.ctx.arc(e.x, e.y, currentR, 0, Math.PI * 2);
-      this.ctx.stroke();
+      // Main ring (stamp)
+      const ringStamp = this._getRingStamp(e.color, undefined);
+      this.ctx.globalAlpha = ratio * ratio * 0.8;
+      this.ctx.drawImage(ringStamp, e.x - currentR, e.y - currentR, currentR * 2, currentR * 2);
 
-      // Inner bright white edge
-      this.ctx.globalAlpha = ratio * 0.4;
+      // Thin hot white inner ring at 80% of main radius
+      const innerR = currentR * 0.80;
+      this.ctx.globalAlpha = ratio * 0.38;
       this.ctx.strokeStyle = "#ffffff";
-      this.ctx.lineWidth = Math.max(0.5, e.radius * 0.03 * ratio);
+      this.ctx.lineWidth   = Math.max(0.5, e.radius * 0.025 * ratio);
       this.ctx.beginPath();
-      this.ctx.arc(e.x, e.y, currentR * 0.88, 0, Math.PI * 2);
+      this.ctx.arc(e.x, e.y, innerR, 0, Math.PI * 2);
       this.ctx.stroke();
     });
     this.ctx.restore();
@@ -5601,109 +5716,162 @@ export class GameEngine {
       const pData = p as any;
       const now = Date.now();
 
-      // Per-weapon color via VFX lookup
       const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
       const ownerColor = shooter?.data.color || (p.render.fillStyle as string) || "#ffffff";
       const vfx = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
-      const color = vfx.color;
+      const color  = vfx.color;
       const color2 = vfx.color2;
-      
+
       this.ctx.save();
       this.ctx.globalCompositeOperation = "lighter";
 
+      // ── BLACK HOLE / ERASER ─────────────────────────────────────────────
       if (pData.isBlackHole || pData.isEraser) {
-        this.ctx.translate(p.position.x, p.position.y);
-        this.ctx.rotate(now / 150);
         const radius = pData.isEraser ? 60 : 40;
-        const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
-        grad.addColorStop(0, "#000");
-        grad.addColorStop(0.7, pData.isEraser ? "#ff0000" : "#a855f7");
-        grad.addColorStop(1, "transparent");
-        this.ctx.fillStyle = grad;
+        const bColor = pData.isEraser ? "#ff2200" : "#a855f7";
+        // Swirling accretion disk stamp
+        const stamp = this._getGlowStamp(bColor, pData.isEraser ? "#ff6600" : "#440088");
+        this.ctx.save();
+        this.ctx.translate(p.position.x, p.position.y);
+        this.ctx.rotate(now / 400);
+        this.ctx.globalAlpha = 0.55;
+        this.ctx.drawImage(stamp, -radius * 2.5, -radius * 2.5, radius * 5, radius * 5);
+        this.ctx.restore();
+        // Dark void core (source-over to punch hole)
+        this.ctx.globalCompositeOperation = "source-over";
+        this.ctx.globalAlpha = 1.0;
+        this.ctx.fillStyle = "#000000";
         this.ctx.beginPath();
-        this.ctx.arc(0, 0, radius, 0, Math.PI * 2);
+        this.ctx.arc(p.position.x, p.position.y, radius * 0.55, 0, Math.PI * 2);
         this.ctx.fill();
-
-        this.ctx.strokeStyle = pData.isEraser ? "#ff4d4d" : "#d8b4fe";
-        this.ctx.lineWidth = 2;
-        for (let i = 0; i < 8; i++) {
-          const a = (i * Math.PI) / 4 + now / 1000;
+        this.ctx.globalCompositeOperation = "lighter";
+        // Rotating spokes
+        this.ctx.strokeStyle = bColor;
+        this.ctx.lineWidth = 1.5;
+        this.ctx.globalAlpha = 0.4;
+        for (let i = 0; i < 6; i++) {
+          const a = (i * Math.PI / 3) + now / 900;
           this.ctx.beginPath();
-          this.ctx.moveTo(0, 0);
-          this.ctx.lineTo(Math.cos(a) * radius * 1.5, Math.sin(a) * radius * 1.5);
+          this.ctx.moveTo(p.position.x + Math.cos(a) * radius * 0.6, p.position.y + Math.sin(a) * radius * 0.6);
+          this.ctx.lineTo(p.position.x + Math.cos(a) * radius * 2.2, p.position.y + Math.sin(a) * radius * 2.2);
           this.ctx.stroke();
         }
+
+      // ── RAILGUN / SNIPER ────────────────────────────────────────────────
       } else if (pData.isRailgun) {
-        // Railgun: sharp bright needle with chromatic fringe
         const vMag = Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2) + 0.01;
-        const len = 40 + vMag * 1.5;
-        const nx = p.velocity.x / vMag;
-        const ny = p.velocity.y / vMag;
-        const angle = Math.atan2(p.velocity.y, p.velocity.x);
+        const len  = 55 + vMag * 1.8;
+        const nx = p.velocity.x / vMag, ny = p.velocity.y / vMag;
+        const px = -ny, py = nx; // perpendicular for fringe offset
 
-        // Chromatic R/B fringe
-        this.ctx.globalAlpha = 0.35;
-        this.ctx.strokeStyle = "#ff2244";
-        this.ctx.lineWidth = 3;
-        this.ctx.beginPath();
-        this.ctx.moveTo(p.position.x - 1.5, p.position.y);
-        this.ctx.lineTo(p.position.x - nx * len - 1.5, p.position.y - ny * len);
-        this.ctx.stroke();
-        this.ctx.strokeStyle = "#22aaff";
-        this.ctx.beginPath();
-        this.ctx.moveTo(p.position.x + 1.5, p.position.y);
-        this.ctx.lineTo(p.position.x - nx * len + 1.5, p.position.y - ny * len);
-        this.ctx.stroke();
+        // Wide outer bloom
+        this.ctx.globalAlpha = 0.18;
+        const rStamp = this._getGlowStamp(color, color2);
+        this.ctx.drawImage(rStamp, p.position.x - 18, p.position.y - 18, 36, 36);
 
-        // Core white needle
-        this.ctx.globalAlpha = 1.0;
-        this.ctx.strokeStyle = "#ffffff";
-        this.ctx.lineWidth = 2 + Math.random() * 1.5;
-        this.ctx.beginPath();
-        this.ctx.moveTo(p.position.x, p.position.y);
-        this.ctx.lineTo(p.position.x - nx * len, p.position.y - ny * len);
-        this.ctx.stroke();
-
-      } else {
-        const radius = p.circleRadius || 6;
-        const vMag = Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2);
-
-        // --- ROUNDS-style projectile: radial gradient orb + motion trail glow ---
-
-        // Outer soft chromatic halo (lateral fringe)
-        if (radius > 4) {
-          this.ctx.globalAlpha = 0.18;
-          this.ctx.fillStyle = "#ff3366";
+        // Chromatic fringe lines
+        this.ctx.lineCap = "round";
+        [[color2 || "#ff2244", px * 2.5, py * 2.5, 2.5, 0.3],
+         ["#22aaff",           -px * 2.5,-py * 2.5, 2.5, 0.3],
+         ["#ffffff",           0,          0,         1.2, 1.0]
+        ].forEach(([col, ox, oy, lw, alpha]) => {
+          this.ctx.globalAlpha = alpha as number;
+          this.ctx.strokeStyle = col as string;
+          this.ctx.lineWidth   = lw as number;
           this.ctx.beginPath();
-          this.ctx.arc(p.position.x - radius * 0.2, p.position.y, radius * 1.8, 0, Math.PI * 2);
-          this.ctx.fill();
-          this.ctx.fillStyle = "#3388ff";
-          this.ctx.beginPath();
-          this.ctx.arc(p.position.x + radius * 0.2, p.position.y, radius * 1.8, 0, Math.PI * 2);
-          this.ctx.fill();
-        }
-
-        // Main radial gradient orb
-        const grad = this.ctx.createRadialGradient(
-          p.position.x - radius * 0.25, p.position.y - radius * 0.25, 0,
-          p.position.x, p.position.y, radius * 2.2
-        );
-        grad.addColorStop(0, "#ffffff");
-        grad.addColorStop(0.25, color);
-        grad.addColorStop(0.7, color);
-        grad.addColorStop(1, "rgba(0,0,0,0)");
-        this.ctx.globalAlpha = 0.95;
-        this.ctx.fillStyle = grad;
-        this.ctx.beginPath();
-        this.ctx.arc(p.position.x, p.position.y, radius * 2.2, 0, Math.PI * 2);
-        this.ctx.fill();
-
-        // Bright specular core
+          this.ctx.moveTo(p.position.x + (ox as number), p.position.y + (oy as number));
+          this.ctx.lineTo(p.position.x - nx * len + (ox as number), p.position.y - ny * len + (oy as number));
+          this.ctx.stroke();
+        });
+        // Hot-point head
         this.ctx.globalAlpha = 1.0;
         this.ctx.fillStyle = "#ffffff";
         this.ctx.beginPath();
-        this.ctx.arc(p.position.x - radius * 0.15, p.position.y - radius * 0.15, radius * 0.35, 0, Math.PI * 2);
+        this.ctx.arc(p.position.x, p.position.y, 3, 0, Math.PI * 2);
         this.ctx.fill();
+
+      // ── STANDARD ORB ───────────────────────────────────────────────────
+      } else {
+        const radius = p.circleRadius || 6;
+        const vMag   = Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2);
+        const stamp  = this._getGlowStamp(color, color2);
+
+        // Motion-stretch: at high speed squish the stamp along velocity axis
+        const stretchAmt = Math.min(vMag * 0.04, 0.6);
+        const angle = vMag > 1 ? Math.atan2(p.velocity.y, p.velocity.x) : 0;
+        const drawR = radius * 2.4;
+
+        this.ctx.save();
+        this.ctx.translate(p.position.x, p.position.y);
+        if (stretchAmt > 0.05) {
+          this.ctx.rotate(angle);
+          this.ctx.scale(1 + stretchAmt, 1 - stretchAmt * 0.4);
+          this.ctx.rotate(-angle);
+        }
+
+        // Outer chromatic halo (drawn at larger size, low alpha)
+        const haloStamp = this._getGlowStamp(color2 || "#ffffff", color);
+        this.ctx.globalAlpha = 0.14;
+        this.ctx.drawImage(haloStamp, -drawR * 1.9, -drawR * 1.9, drawR * 3.8, drawR * 3.8);
+
+        // Main orb
+        this.ctx.globalAlpha = 0.92;
+        this.ctx.drawImage(stamp, -drawR, -drawR, drawR * 2, drawR * 2);
+
+        this.ctx.restore();
+
+        // Lens-flare cross (4-point star) for high-damage weapons
+        if (radius >= 6) {
+          const fLen  = radius * (2.2 + Math.sin(now / 180) * 0.3);
+          const fAlpha = 0.55 + Math.sin(now / 220) * 0.12;
+          this.ctx.lineCap = "round";
+          this.ctx.globalAlpha = fAlpha;
+
+          // Horizontal arm
+          const hg = this.ctx.createLinearGradient(
+            p.position.x - fLen, p.position.y,
+            p.position.x + fLen, p.position.y,
+          );
+          hg.addColorStop(0,   "rgba(0,0,0,0)");
+          hg.addColorStop(0.4, color);
+          hg.addColorStop(0.5, "#ffffff");
+          hg.addColorStop(0.6, color);
+          hg.addColorStop(1,   "rgba(0,0,0,0)");
+          this.ctx.strokeStyle = hg;
+          this.ctx.lineWidth   = Math.max(0.8, radius * 0.22);
+          this.ctx.beginPath();
+          this.ctx.moveTo(p.position.x - fLen, p.position.y);
+          this.ctx.lineTo(p.position.x + fLen, p.position.y);
+          this.ctx.stroke();
+
+          // Vertical arm
+          const vg = this.ctx.createLinearGradient(
+            p.position.x, p.position.y - fLen,
+            p.position.x, p.position.y + fLen,
+          );
+          vg.addColorStop(0,   "rgba(0,0,0,0)");
+          vg.addColorStop(0.4, color);
+          vg.addColorStop(0.5, "#ffffff");
+          vg.addColorStop(0.6, color);
+          vg.addColorStop(1,   "rgba(0,0,0,0)");
+          this.ctx.strokeStyle = vg;
+          this.ctx.beginPath();
+          this.ctx.moveTo(p.position.x, p.position.y - fLen);
+          this.ctx.lineTo(p.position.x, p.position.y + fLen);
+          this.ctx.stroke();
+
+          // Diagonal 45° short arms (softer)
+          this.ctx.globalAlpha = fAlpha * 0.4;
+          this.ctx.lineWidth   = Math.max(0.5, radius * 0.12);
+          const dLen = fLen * 0.55;
+          [[1,1],[-1,1],[1,-1],[-1,-1]].forEach(([dx, dy]) => {
+            this.ctx.strokeStyle = color;
+            this.ctx.beginPath();
+            this.ctx.moveTo(p.position.x, p.position.y);
+            this.ctx.lineTo(p.position.x + dx * dLen, p.position.y + dy * dLen);
+            this.ctx.stroke();
+          });
+        }
       }
       this.ctx.restore();
     });
