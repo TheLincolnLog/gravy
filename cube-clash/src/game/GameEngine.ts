@@ -78,88 +78,6 @@ export class GameEngine {
     legendary: "#fbbf24",
     mythical: "#ef4444",
   };
-
-  // ── Pre-baked gradient texture atlas ────────────────────────────────────────
-  // We render each gradient type once to an offscreen canvas and reuse it via
-  // drawImage() — eliminates createRadialGradient() overhead per-particle.
-  private _stampCache: Map<string, HTMLCanvasElement> = new Map();
-  private _frameCount: number = 0;
-
-  private _getGlowStamp(color: string, color2?: string): HTMLCanvasElement {
-    const key = `g_${color}_${color2 ?? ""}`;
-    if (this._stampCache.has(key)) return this._stampCache.get(key)!;
-    const S = 128;
-    const oc = document.createElement("canvas");
-    oc.width = oc.height = S;
-    const cx = oc.getContext("2d")!;
-    const c = S / 2;
-    const g = cx.createRadialGradient(c * 0.8, c * 0.8, 0, c, c, c);
-    g.addColorStop(0,    "#ffffff");
-    g.addColorStop(0.15, "#ffffff");
-    g.addColorStop(0.35, color);
-    if (color2) g.addColorStop(0.65, color2);
-    g.addColorStop(1,    "rgba(0,0,0,0)");
-    cx.fillStyle = g;
-    cx.fillRect(0, 0, S, S);
-    this._stampCache.set(key, oc);
-    return oc;
-  }
-
-  private _getRingStamp(color: string, color2?: string): HTMLCanvasElement {
-    const key = `r_${color}_${color2 ?? ""}`;
-    if (this._stampCache.has(key)) return this._stampCache.get(key)!;
-    const S = 128;
-    const oc = document.createElement("canvas");
-    oc.width = oc.height = S;
-    const cx = oc.getContext("2d")!;
-    const c = S / 2;
-    // Outer soft bloom
-    const bg = cx.createRadialGradient(c, c, c * 0.6, c, c, c);
-    bg.addColorStop(0, color + "66");
-    bg.addColorStop(1, "rgba(0,0,0,0)");
-    cx.fillStyle = bg;
-    cx.fillRect(0, 0, S, S);
-    // Main ring
-    cx.strokeStyle = color;
-    cx.lineWidth = S * 0.08;
-    cx.beginPath(); cx.arc(c, c, c * 0.80, 0, Math.PI * 2); cx.stroke();
-    // Bright inner edge
-    cx.strokeStyle = "#ffffff";
-    cx.lineWidth = S * 0.028;
-    cx.beginPath(); cx.arc(c, c, c * 0.70, 0, Math.PI * 2); cx.stroke();
-    // Color2 outer ring
-    if (color2) {
-      cx.globalAlpha = 0.5;
-      cx.strokeStyle = color2;
-      cx.lineWidth = S * 0.04;
-      cx.beginPath(); cx.arc(c, c, c * 0.90, 0, Math.PI * 2); cx.stroke();
-    }
-    this._stampCache.set(key, oc);
-    return oc;
-  }
-
-  private _getSmokeStamp(color: string): HTMLCanvasElement {
-    const key = `s_${color}`;
-    if (this._stampCache.has(key)) return this._stampCache.get(key)!;
-    const S = 128;
-    const oc = document.createElement("canvas");
-    oc.width = oc.height = S;
-    const cx = oc.getContext("2d")!;
-    const c = S / 2;
-    // Multi-octave smoke: three overlapping soft circles offset slightly
-    const offsets = [[0,0,1.0],[c*0.18,-c*0.1,0.6],[-c*0.12,c*0.15,0.45]];
-    offsets.forEach(([ox, oy, a]) => {
-      cx.globalAlpha = a;
-      const g = cx.createRadialGradient(c + ox, c + oy, 0, c + ox, c + oy, c * 0.85);
-      g.addColorStop(0,   color);
-      g.addColorStop(0.5, color);
-      g.addColorStop(1,   "rgba(0,0,0,0)");
-      cx.fillStyle = g;
-      cx.beginPath(); cx.arc(c + ox, c + oy, c * 0.85, 0, Math.PI * 2); cx.fill();
-    });
-    this._stampCache.set(key, oc);
-    return oc;
-  }
   private level: Level;
   private platforms: Matter.Body[] = [];
   private fireflies: Matter.Body[] = [];
@@ -1503,13 +1421,60 @@ export class GameEngine {
     radius: number,
     damage: number,
     ownerId: number,
-    weaponType?: string,
   ) {
-    // Find owner color for VFX
-    const owner = this.players.find(p => p.data.id === ownerId);
-    const ownerColor = owner?.data.color || "#ff6600";
+    // === ROUNDS-STYLE EXPLOSION ===
 
-    this.spawnWeaponExplosion(x, y, weaponType || "bazooka", ownerColor, radius);
+    // 1. White flash core
+    this.effects.push({ x, y, radius: radius * 0.6, life: 8, maxLife: 8, color: "rgba(255,255,255,1)" });
+
+    // 2. Expanding color ring (shockwave)
+    for (let i = 0; i < 3; i++) {
+      this.effects.push({
+        x, y,
+        radius: radius * (0.5 + i * 0.5),
+        life: 14 + i * 6,
+        maxLife: 14 + i * 6,
+        color: i === 0 ? "rgba(255,200,80,0.7)" : i === 1 ? "rgba(255,120,20,0.4)" : "rgba(180,60,10,0.2)",
+      });
+    }
+
+    // 3. Fluid blob cores — thick liquid orange/yellow bursts (ROUNDS look)
+    this.createParticles(x, y, "#ffcc22", 18, 4.5, {
+      drag: 0.91, gravity: 0.08, type: "blob", size: 18,
+      vSize: -0.25, additive: true, life: 1.4,
+      color2: "#ff6600", noise: 0.15, swirlSpeed: 0.12,
+    });
+
+    // 4. Radial spark burst — the spiky halo
+    this.createParticles(x, y, "#ffffff", 24, 8, {
+      drag: 0.88, gravity: 0.25, type: "spark", size: 4,
+      additive: true, life: 0.6, chromatic: true,
+    });
+
+    // 5. Chromatic streamers — energy tendrils flying outward
+    this.createParticles(x, y, "#ff8822", 12, 6, {
+      drag: 0.93, gravity: 0.1, type: "streamer", size: 8,
+      additive: true, life: 0.9, color2: "#ffff44",
+    });
+
+    // 6. Ember glow trails — floating embers that linger
+    this.createParticles(x, y, "#ff4400", 30, 3.5, {
+      drag: 0.97, gravity: -0.02, type: "fluid", size: 7,
+      vSize: -0.08, additive: true, life: 1.8,
+      color2: "#ffaa00", noise: 0.08,
+    });
+
+    // 7. Expanding ring particles
+    this.createParticles(x, y, "#ffdd88", 6, 0.5, {
+      drag: 0.99, gravity: 0, type: "ring", size: radius * 0.4,
+      additive: true, life: 0.7, vSize: radius * 0.04,
+    });
+
+    // 8. Soft smoke cloud backdrop
+    this.createParticles(x, y, "rgba(40,30,20,0.12)", 10, 0.9, {
+      drag: 0.985, gravity: -0.04, type: "smoke", size: 20,
+      vSize: 0.4, life: 2.5, noise: 0.05,
+    });
 
     const shakeAmount = (radius / 100) * 45;
     this.camera.shake = Math.max(this.camera.shake, shakeAmount);
@@ -1704,7 +1669,6 @@ export class GameEngine {
                   radius,
                   damage,
                   ownerId,
-                  pData.weaponType,
                 );
               } else if (pData.isPortalShot) {
                 this.createPortal(
@@ -1790,14 +1754,43 @@ export class GameEngine {
               );
               return;
             }
-            // Per-weapon fluid wall splash
+            // === ROUNDS-STYLE FLUID WALL SPLASH ===
+            const impactColor = (projectile.render.fillStyle as string) || "#fff";
             const impactVel = projectile.velocity;
-            this.spawnWeaponImpact(
-              projectile.position.x, projectile.position.y,
-              pData.weaponType || "default",
-              (projectile.render.fillStyle as string) || "#fff",
-              impactVel.x, impactVel.y,
-            );
+            const speed = Math.sqrt(impactVel.x * impactVel.x + impactVel.y * impactVel.y);
+            const normalizedVx = speed > 0 ? impactVel.x / speed : 0;
+            const normalizedVy = speed > 0 ? impactVel.y / speed : 0;
+            
+            // 1. Primary fluid blobs — the main liquid splash
+            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 10, 2.5, {
+              type: "blob", drag: 0.92, gravity: 0.15, size: 9,
+              vSize: -0.18, additive: true, life: 0.9,
+              color2: "#ffffff", noise: 0.12, swirlSpeed: 0.18,
+              vx: -normalizedVx * speed * 0.3,
+              vy: -normalizedVy * speed * 0.3,
+            });
+
+            // 2. Elongated chromatic sparks — the "pop" of impact
+            this.createParticles(projectile.position.x, projectile.position.y, "#ffffff", 8, 4.5, {
+              type: "spark", drag: 0.87, gravity: 0.2, size: 3,
+              additive: true, life: 0.45, chromatic: true,
+              vx: -normalizedVx * speed * 0.5,
+              vy: -normalizedVy * speed * 0.5,
+            });
+
+            // 3. Fluid streamer tendrils radiating from impact
+            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 5, 3.0, {
+              type: "streamer", drag: 0.93, gravity: 0.1, size: 6,
+              additive: true, life: 0.6, color2: "#ffffff",
+              vx: -normalizedVx * speed * 0.4,
+              vy: -normalizedVy * speed * 0.4,
+            });
+
+            // 4. Ambient glow bloom at impact point
+            this.createParticles(projectile.position.x, projectile.position.y, impactColor, 3, 0.3, {
+              type: "ring", drag: 0.99, gravity: 0, size: 12,
+              additive: true, life: 0.5, vSize: 5,
+            });
             if (pData.isMagnet) {
               this.magnets.push({
                 id: Math.random().toString(),
@@ -1820,7 +1813,6 @@ export class GameEngine {
                 radius,
                 damage,
                 pData.ownerId,
-                pData.weaponType,
               );
               this.removeProjectile(projectile);
             } else if (pData.isPortalShot) {
@@ -2222,7 +2214,9 @@ export class GameEngine {
             this.explode(
               pos.x + (Math.random() - 0.5) * 150,
               pos.y + (Math.random() - 0.5) * 150,
-              60, 5, p.data.id, "fireball_launcher",
+              60,
+              5,
+              p.data.id,
             );
           }
           if (mode === "purple") {
@@ -3285,246 +3279,30 @@ export class GameEngine {
       });
       pData.prevPos = { x: projectile.position.x, y: projectile.position.y };
       pData.trailPoints = [];
-      // Tag the weapon type for per-weapon VFX lookup
-      pData.weaponType = weapon?.type || "default";
       this.projectiles.push(projectile);
       World.add(this.engine.world, projectile);
     }
 
-    // Per-weapon muzzle flash
-    this.spawnMuzzleFlash(
+    // Muzzle Flash Effect
+    const flashColor = weapon
+      ? this.rarityColors[weapon.rarity]
+      : player.data.color;
+    
+    this.createParticles(
       pos.x + Math.cos(angle) * 45,
       pos.y + Math.sin(angle) * 40,
-      weapon?.type || "default",
-      player.data.color,
+      flashColor,
+      8,
+      2,
+      {
+        type: "glow",
+        spread: 1.2,
+        life: 0.4,
+        size: 30,
+        additive: true,
+        vSize: 0.5
+      }
     );
-  }
-
-  // ═══════════════════════════════════════════════════════
-  // PER-WEAPON VFX SYSTEM
-  // ═══════════════════════════════════════════════════════
-
-  /**
-   * Per-weapon VFX profile. Each entry defines:
-   *   color / color2     — primary and secondary particle colors
-   *   impactType         — particle type for wall hits
-   *   impactSize         — blob/spark size
-   *   impactCount        — number of particles on impact
-   *   impactSpeed        — outward velocity multiplier
-   *   impactSwirlSpeed   — fluid swirl amount (makes it more liquid)
-   *   impactNoise        — turbulence
-   *   impactLife         — lifetime
-   *   muzzleType         — particle type at barrel
-   *   muzzleSize / muzzleCount
-   *   explodeColors      — [core, ember, smoke] for explosions
-   *   trailType          — particle type emitted each frame while flying
-   *   trailRate          — 0-1 probability per frame of emitting
-   */
-  private getWeaponVfx(weaponType: string, ownerColor: string): {
-    color: string; color2: string;
-    impactType: any; impactSize: number; impactCount: number;
-    impactSpeed: number; impactSwirlSpeed: number; impactNoise: number; impactLife: number;
-    muzzleType: any; muzzleSize: number; muzzleCount: number;
-    explodeColors: [string, string, string];
-    trailType: any; trailRate: number; trailSize: number;
-  } {
-    const presets: Record<string, any> = {
-      // ── FIRE / EXPLOSIVE ──────────────────────────────────
-      bazooka:           { color:"#ff6600", color2:"#ffcc00", impactType:"blob",     impactSize:14, impactCount:14, impactSpeed:3.2, impactSwirlSpeed:0.22, impactNoise:0.18, impactLife:1.1, muzzleType:"blob",     muzzleSize:22, muzzleCount:8,  explodeColors:["#ff8800","#ff2200","rgba(30,15,5,0.15)"],     trailType:"glow",     trailRate:0.9, trailSize:10 },
-      rocket_launcher:   { color:"#ff4400", color2:"#ffaa00", impactType:"blob",     impactSize:16, impactCount:16, impactSpeed:3.5, impactSwirlSpeed:0.20, impactNoise:0.2,  impactLife:1.2, muzzleType:"blob",     muzzleSize:20, muzzleCount:10, explodeColors:["#ff6600","#ff0000","rgba(20,10,5,0.12)"],     trailType:"fluid",    trailRate:1.0, trailSize:12 },
-      flamethrower:      { color:"#ff5500", color2:"#ffff00", impactType:"fluid",    impactSize:10, impactCount:18, impactSpeed:1.8, impactSwirlSpeed:0.35, impactNoise:0.3,  impactLife:0.9, muzzleType:"fluid",    muzzleSize:14, muzzleCount:14, explodeColors:["#ff8800","#ff3300","rgba(25,10,5,0.12)"],     trailType:"fluid",    trailRate:1.0, trailSize:14 },
-      fireball_launcher: { color:"#ff6600", color2:"#ffdd00", impactType:"blob",     impactSize:12, impactCount:12, impactSpeed:2.8, impactSwirlSpeed:0.28, impactNoise:0.2,  impactLife:1.0, muzzleType:"blob",     muzzleSize:18, muzzleCount:8,  explodeColors:["#ff9900","#ff4400","rgba(20,10,5,0.1)"],      trailType:"fluid",    trailRate:0.9, trailSize:11 },
-      dragon_breath:     { color:"#ff3300", color2:"#ff9900", impactType:"fluid",    impactSize:13, impactCount:20, impactSpeed:2.0, impactSwirlSpeed:0.40, impactNoise:0.35, impactLife:1.0, muzzleType:"fluid",    muzzleSize:16, muzzleCount:16, explodeColors:["#ff6600","#ff0000","rgba(15,5,0,0.1)"],       trailType:"fluid",    trailRate:1.0, trailSize:16 },
-      flame_staff:       { color:"#ff2200", color2:"#ff8800", impactType:"fluid",    impactSize:11, impactCount:14, impactSpeed:2.2, impactSwirlSpeed:0.30, impactNoise:0.25, impactLife:0.9, muzzleType:"fluid",    muzzleSize:15, muzzleCount:10, explodeColors:["#ff5500","#ff1100","rgba(15,5,0,0.1)"],       trailType:"fluid",    trailRate:0.95,trailSize:13 },
-      inferno_cannon:    { color:"#cc0000", color2:"#ff6600", impactType:"blob",     impactSize:18, impactCount:18, impactSpeed:3.8, impactSwirlSpeed:0.18, impactNoise:0.15, impactLife:1.3, muzzleType:"blob",     muzzleSize:26, muzzleCount:12, explodeColors:["#ff4400","#aa0000","rgba(20,5,0,0.12)"],      trailType:"blob",     trailRate:0.8, trailSize:14 },
-
-      // ── ICE / FREEZE ──────────────────────────────────────
-      freeze_ray:        { color:"#88eeff", color2:"#ffffff", impactType:"fluid",    impactSize:11, impactCount:14, impactSpeed:2.5, impactSwirlSpeed:0.12, impactNoise:0.08, impactLife:1.2, muzzleType:"fluid",    muzzleSize:16, muzzleCount:8,  explodeColors:["#aaddff","#ffffff","rgba(10,30,50,0.1)"],     trailType:"fluid",    trailRate:0.85,trailSize:10 },
-      ice_spike:         { color:"#b3ecff", color2:"#ffffff", impactType:"spark",    impactSize:6,  impactCount:20, impactSpeed:5.0, impactSwirlSpeed:0.05, impactNoise:0.05, impactLife:0.7, muzzleType:"spark",    muzzleSize:6,  muzzleCount:12, explodeColors:["#ccf0ff","#ffffff","rgba(5,20,40,0.08)"],     trailType:"glow",     trailRate:0.7, trailSize:8  },
-      frost_giant_axe:   { color:"#66ccff", color2:"#aaffff", impactType:"blob",     impactSize:14, impactCount:12, impactSpeed:3.0, impactSwirlSpeed:0.10, impactNoise:0.1,  impactLife:1.1, muzzleType:"blob",     muzzleSize:20, muzzleCount:8,  explodeColors:["#99ddff","#ffffff","rgba(5,20,40,0.08)"],     trailType:"fluid",    trailRate:0.8, trailSize:12 },
-
-      // ── ELECTRIC / LIGHTNING ──────────────────────────────
-      arc_lightning:     { color:"#ffffff", color2:"#aaccff", impactType:"spark",    impactSize:5,  impactCount:28, impactSpeed:7.0, impactSwirlSpeed:0.08, impactNoise:0.6,  impactLife:0.45,muzzleType:"spark",    muzzleSize:4,  muzzleCount:20, explodeColors:["#ccddff","#ffffff","rgba(5,10,30,0.08)"],     trailType:"spark",    trailRate:0.95,trailSize:4  },
-      thunder_bow:       { color:"#ffee00", color2:"#ffffff", impactType:"spark",    impactSize:6,  impactCount:24, impactSpeed:6.5, impactSwirlSpeed:0.06, impactNoise:0.5,  impactLife:0.5, muzzleType:"spark",    muzzleSize:5,  muzzleCount:16, explodeColors:["#ffdd00","#ffffff","rgba(20,15,0,0.08)"],     trailType:"spark",    trailRate:0.9, trailSize:5  },
-      tesla_coil:        { color:"#88aaff", color2:"#ffffff", impactType:"spark",    impactSize:5,  impactCount:30, impactSpeed:7.5, impactSwirlSpeed:0.10, impactNoise:0.65, impactLife:0.4, muzzleType:"spark",    muzzleSize:4,  muzzleCount:24, explodeColors:["#aabbff","#ffffff","rgba(5,10,30,0.08)"],     trailType:"spark",    trailRate:1.0, trailSize:4  },
-      electric_whip:     { color:"#99ccff", color2:"#ffffff", impactType:"spark",    impactSize:4,  impactCount:22, impactSpeed:6.0, impactSwirlSpeed:0.08, impactNoise:0.55, impactLife:0.4, muzzleType:"spark",    muzzleSize:3,  muzzleCount:18, explodeColors:["#bbddff","#ffffff","rgba(5,10,30,0.06)"],     trailType:"spark",    trailRate:1.0, trailSize:3  },
-
-      // ── POISON / ACID / TOXIC ─────────────────────────────
-      poison_dart_gun:   { color:"#88ff44", color2:"#446600", impactType:"fluid",    impactSize:9,  impactCount:12, impactSpeed:2.0, impactSwirlSpeed:0.28, impactNoise:0.25, impactLife:1.1, muzzleType:"fluid",    muzzleSize:10, muzzleCount:6,  explodeColors:["#66ee22","#224400","rgba(10,20,5,0.1)"],      trailType:"fluid",    trailRate:0.7, trailSize:8  },
-      toxic_cloud:       { color:"#aaff00", color2:"#558800", impactType:"smoke",    impactSize:20, impactCount:10, impactSpeed:0.8, impactSwirlSpeed:0.18, impactNoise:0.4,  impactLife:2.0, muzzleType:"smoke",    muzzleSize:25, muzzleCount:8,  explodeColors:["#88ee00","#335500","rgba(10,20,5,0.15)"],     trailType:"smoke",    trailRate:0.8, trailSize:18 },
-      acid_spitter:      { color:"#ccff44", color2:"#446600", impactType:"blob",     impactSize:10, impactCount:14, impactSpeed:2.2, impactSwirlSpeed:0.30, impactNoise:0.28, impactLife:1.0, muzzleType:"blob",     muzzleSize:12, muzzleCount:8,  explodeColors:["#aaff22","#335500","rgba(10,20,5,0.1)"],      trailType:"fluid",    trailRate:0.75,trailSize:9  },
-      necro_staff:       { color:"#55ff44", color2:"#003300", impactType:"fluid",    impactSize:12, impactCount:10, impactSpeed:1.5, impactSwirlSpeed:0.22, impactNoise:0.2,  impactLife:1.3, muzzleType:"fluid",    muzzleSize:15, muzzleCount:8,  explodeColors:["#44cc22","#112200","rgba(5,15,5,0.1)"],       trailType:"glow",     trailRate:0.6, trailSize:10 },
-
-      // ── PLASMA / ENERGY ───────────────────────────────────
-      plasma_rifle:      { color:"#00ffaa", color2:"#00ffff", impactType:"blob",     impactSize:12, impactCount:14, impactSpeed:3.0, impactSwirlSpeed:0.25, impactNoise:0.15, impactLife:1.0, muzzleType:"blob",     muzzleSize:16, muzzleCount:10, explodeColors:["#00ffbb","#00aaff","rgba(0,20,15,0.1)"],      trailType:"fluid",    trailRate:0.9, trailSize:11 },
-      photon_blaster:    { color:"#00ccff", color2:"#ffffff", impactType:"fluid",    impactSize:11, impactCount:12, impactSpeed:3.5, impactSwirlSpeed:0.15, impactNoise:0.1,  impactLife:0.8, muzzleType:"fluid",    muzzleSize:14, muzzleCount:8,  explodeColors:["#00ddff","#aaffff","rgba(0,15,25,0.08)"],     trailType:"streamer", trailRate:0.9, trailSize:8  },
-      nebula_ray:        { color:"#dd88ff", color2:"#ff44ff", impactType:"blob",     impactSize:13, impactCount:14, impactSpeed:2.8, impactSwirlSpeed:0.30, impactNoise:0.2,  impactLife:1.1, muzzleType:"blob",     muzzleSize:18, muzzleCount:10, explodeColors:["#cc66ff","#ff00ff","rgba(20,5,25,0.1)"],      trailType:"fluid",    trailRate:0.9, trailSize:12 },
-      pulsar_rifle:      { color:"#8888ff", color2:"#ccccff", impactType:"streamer", impactSize:8,  impactCount:14, impactSpeed:4.0, impactSwirlSpeed:0.08, impactNoise:0.12, impactLife:0.8, muzzleType:"streamer", muzzleSize:10, muzzleCount:10, explodeColors:["#8899ff","#ccddff","rgba(5,5,20,0.08)"],      trailType:"streamer", trailRate:0.95,trailSize:7  },
-      arcane_missile:    { color:"#7755ff", color2:"#ffaaff", impactType:"blob",     impactSize:11, impactCount:12, impactSpeed:2.5, impactSwirlSpeed:0.28, impactNoise:0.18, impactLife:1.0, muzzleType:"blob",     muzzleSize:15, muzzleCount:8,  explodeColors:["#9966ff","#ff88ff","rgba(15,5,20,0.1)"],      trailType:"fluid",    trailRate:0.85,trailSize:10 },
-      quantum_rifle:     { color:"#44aaff", color2:"#aaffff", impactType:"streamer", impactSize:9,  impactCount:16, impactSpeed:4.5, impactSwirlSpeed:0.06, impactNoise:0.1,  impactLife:0.7, muzzleType:"streamer", muzzleSize:11, muzzleCount:10, explodeColors:["#55ccff","#aaffff","rgba(0,15,25,0.08)"],     trailType:"streamer", trailRate:1.0, trailSize:8  },
-      omega_cannon:      { color:"#ff2200", color2:"#ff9900", impactType:"blob",     impactSize:22, impactCount:20, impactSpeed:5.0, impactSwirlSpeed:0.15, impactNoise:0.12, impactLife:1.5, muzzleType:"blob",     muzzleSize:35, muzzleCount:16, explodeColors:["#ff5500","#ff0000","rgba(30,5,0,0.18)"],      trailType:"blob",     trailRate:1.0, trailSize:20 },
-      disintegration_ray:{ color:"#000000", color2:"#440000", impactType:"fluid",    impactSize:14, impactCount:10, impactSpeed:2.0, impactSwirlSpeed:0.12, impactNoise:0.15, impactLife:0.8, muzzleType:"fluid",    muzzleSize:18, muzzleCount:6,  explodeColors:["#220000","#440000","rgba(10,0,0,0.15)"],      trailType:"glow",     trailRate:0.7, trailSize:12 },
-      reality_warper:    { color:"#ff88ff", color2:"#ffffff", impactType:"blob",     impactSize:15, impactCount:14, impactSpeed:2.5, impactSwirlSpeed:0.40, impactNoise:0.35, impactLife:1.2, muzzleType:"blob",     muzzleSize:20, muzzleCount:10, explodeColors:["#ff66ff","#ffffff","rgba(20,5,20,0.1)"],      trailType:"fluid",    trailRate:0.85,trailSize:14 },
-      chaos_orb:         { color:"#dd00ff", color2:"#ff00aa", impactType:"blob",     impactSize:16, impactCount:16, impactSpeed:3.0, impactSwirlSpeed:0.45, impactNoise:0.4,  impactLife:1.3, muzzleType:"blob",     muzzleSize:22, muzzleCount:12, explodeColors:["#bb00ee","#ff0088","rgba(20,0,20,0.12)"],     trailType:"fluid",    trailRate:0.9, trailSize:15 },
-      echo_cannon:       { color:"#aaaaaa", color2:"#ffffff", impactType:"ring",     impactSize:20, impactCount:6,  impactSpeed:1.0, impactSwirlSpeed:0.05, impactNoise:0.05, impactLife:0.8, muzzleType:"ring",     muzzleSize:25, muzzleCount:4,  explodeColors:["#cccccc","#ffffff","rgba(15,15,15,0.1)"],     trailType:"ring",     trailRate:0.4, trailSize:18 },
-      stasis_field:      { color:"#3399ff", color2:"#aaccff", impactType:"ring",     impactSize:18, impactCount:6,  impactSpeed:0.8, impactSwirlSpeed:0.04, impactNoise:0.04, impactLife:1.0, muzzleType:"ring",     muzzleSize:22, muzzleCount:4,  explodeColors:["#4488ff","#aaddff","rgba(5,10,30,0.1)"],      trailType:"ring",     trailRate:0.35,trailSize:16 },
-
-      // ── GRAVITY / VOID / DARK ─────────────────────────────
-      black_hole:        { color:"#a855f7", color2:"#220033", impactType:"fluid",    impactSize:18, impactCount:8,  impactSpeed:1.2, impactSwirlSpeed:0.55, impactNoise:0.5,  impactLife:1.5, muzzleType:"fluid",    muzzleSize:22, muzzleCount:6,  explodeColors:["#9900ff","#220044","rgba(10,0,20,0.15)"],     trailType:"fluid",    trailRate:0.7, trailSize:16 },
-      gravity_pulse:     { color:"#aa55ff", color2:"#440088", impactType:"ring",     impactSize:22, impactCount:6,  impactSpeed:0.6, impactSwirlSpeed:0.06, impactNoise:0.08, impactLife:1.2, muzzleType:"ring",     muzzleSize:28, muzzleCount:4,  explodeColors:["#9944ee","#440077","rgba(10,0,20,0.12)"],     trailType:"ring",     trailRate:0.4, trailSize:20 },
-      void_bow:          { color:"#7c3aed", color2:"#cc88ff", impactType:"blob",     impactSize:13, impactCount:12, impactSpeed:2.5, impactSwirlSpeed:0.35, impactNoise:0.25, impactLife:1.1, muzzleType:"blob",     muzzleSize:17, muzzleCount:8,  explodeColors:["#8833dd","#cc66ff","rgba(10,0,20,0.1)"],      trailType:"fluid",    trailRate:0.8, trailSize:12 },
-      void_sabre:        { color:"#7c3aed", color2:"#aa66ff", impactType:"fluid",    impactSize:12, impactCount:10, impactSpeed:2.2, impactSwirlSpeed:0.30, impactNoise:0.2,  impactLife:0.9, muzzleType:"fluid",    muzzleSize:16, muzzleCount:8,  explodeColors:["#7722cc","#aa55ff","rgba(10,0,20,0.08)"],     trailType:"fluid",    trailRate:0.75,trailSize:11 },
-      gravity_cannon:    { color:"#cc88ff", color2:"#440066", impactType:"ring",     impactSize:24, impactCount:8,  impactSpeed:0.5, impactSwirlSpeed:0.08, impactNoise:0.06, impactLife:1.4, muzzleType:"ring",     muzzleSize:30, muzzleCount:5,  explodeColors:["#aa55ee","#330055","rgba(10,0,20,0.15)"],     trailType:"ring",     trailRate:0.45,trailSize:22 },
-      gravity_grenade:   { color:"#a855f7", color2:"#330066", impactType:"blob",     impactSize:14, impactCount:10, impactSpeed:2.0, impactSwirlSpeed:0.40, impactNoise:0.3,  impactLife:1.2, muzzleType:"blob",     muzzleSize:18, muzzleCount:8,  explodeColors:["#9933ee","#220055","rgba(10,0,20,0.12)"],     trailType:"fluid",    trailRate:0.6, trailSize:13 },
-      shatter_ray:       { color:"#88ddff", color2:"#ffffff", impactType:"spark",    impactSize:7,  impactCount:24, impactSpeed:5.5, impactSwirlSpeed:0.06, impactNoise:0.2,  impactLife:0.6, muzzleType:"spark",    muzzleSize:5,  muzzleCount:16, explodeColors:["#aaeeff","#ffffff","rgba(0,15,25,0.08)"],     trailType:"spark",    trailRate:0.85,trailSize:5  },
-
-      // ── LIFE / HEALING / VAMPIRIC ─────────────────────────
-      vampire_bat_gun:   { color:"#ff0044", color2:"#660011", impactType:"fluid",    impactSize:10, impactCount:12, impactSpeed:2.5, impactSwirlSpeed:0.28, impactNoise:0.22, impactLife:1.0, muzzleType:"fluid",    muzzleSize:12, muzzleCount:8,  explodeColors:["#dd0033","#440011","rgba(20,0,5,0.1)"],       trailType:"fluid",    trailRate:0.75,trailSize:9  },
-      lifesteal_dagger:  { color:"#ff2255", color2:"#880022", impactType:"blob",     impactSize:9,  impactCount:10, impactSpeed:2.8, impactSwirlSpeed:0.24, impactNoise:0.2,  impactLife:0.9, muzzleType:"blob",     muzzleSize:11, muzzleCount:6,  explodeColors:["#ee1144","#550011","rgba(20,0,5,0.08)"],      trailType:"fluid",    trailRate:0.7, trailSize:8  },
-      blood_spear:       { color:"#ee0022", color2:"#660000", impactType:"blob",     impactSize:13, impactCount:14, impactSpeed:3.0, impactSwirlSpeed:0.20, impactNoise:0.18, impactLife:1.0, muzzleType:"blob",     muzzleSize:16, muzzleCount:10, explodeColors:["#dd0011","#550000","rgba(20,0,0,0.1)"],       trailType:"fluid",    trailRate:0.8, trailSize:12 },
-      soul_reaper:       { color:"#8800ff", color2:"#ff0044", impactType:"fluid",    impactSize:12, impactCount:12, impactSpeed:2.2, impactSwirlSpeed:0.35, impactNoise:0.28, impactLife:1.1, muzzleType:"fluid",    muzzleSize:16, muzzleCount:8,  explodeColors:["#7700ee","#dd0033","rgba(15,0,15,0.1)"],      trailType:"fluid",    trailRate:0.8, trailSize:11 },
-      holy_grenade:      { color:"#ffffcc", color2:"#ffee88", impactType:"blob",     impactSize:16, impactCount:18, impactSpeed:3.5, impactSwirlSpeed:0.18, impactNoise:0.15, impactLife:1.3, muzzleType:"blob",     muzzleSize:22, muzzleCount:12, explodeColors:["#ffffaa","#ffdd55","rgba(25,25,10,0.1)"],     trailType:"glow",     trailRate:0.8, trailSize:14 },
-
-      // ── SNIPER / PRECISION ────────────────────────────────
-      railgun:           { color:"#38bdf8", color2:"#ffffff", impactType:"spark",    impactSize:5,  impactCount:30, impactSpeed:8.0, impactSwirlSpeed:0.04, impactNoise:0.12, impactLife:0.5, muzzleType:"streamer", muzzleSize:8,  muzzleCount:12, explodeColors:["#55ccff","#ffffff","rgba(0,15,25,0.06)"],     trailType:"streamer", trailRate:1.0, trailSize:6  },
-      nuclear_sniper:    { color:"#aaff44", color2:"#ffff88", impactType:"spark",    impactSize:6,  impactCount:28, impactSpeed:7.5, impactSwirlSpeed:0.05, impactNoise:0.15, impactLife:0.55,muzzleType:"streamer", muzzleSize:9,  muzzleCount:14, explodeColors:["#aaee33","#ffff66","rgba(10,20,0,0.08)"],     trailType:"streamer", trailRate:1.0, trailSize:7  },
-      sniper_rifle:      { color:"#f8fafc", color2:"#aaccff", impactType:"spark",    impactSize:4,  impactCount:22, impactSpeed:7.0, impactSwirlSpeed:0.03, impactNoise:0.08, impactLife:0.45,muzzleType:"streamer", muzzleSize:6,  muzzleCount:10, explodeColors:["#ccddff","#ffffff","rgba(5,5,15,0.06)"],      trailType:"streamer", trailRate:1.0, trailSize:5  },
-
-      // ── SHOTGUN / SMG / PISTOL ────────────────────────────
-      shotgun:           { color:"#fbbf24", color2:"#ffee88", impactType:"spark",    impactSize:5,  impactCount:16, impactSpeed:5.0, impactSwirlSpeed:0.08, impactNoise:0.2,  impactLife:0.5, muzzleType:"spark",    muzzleSize:6,  muzzleCount:14, explodeColors:["#ffcc33","#ffaa00","rgba(20,15,0,0.08)"],     trailType:"spark",    trailRate:0.6, trailSize:4  },
-      smg:               { color:"#e5e7eb", color2:"#ffffff", impactType:"spark",    impactSize:3,  impactCount:10, impactSpeed:4.5, impactSwirlSpeed:0.06, impactNoise:0.15, impactLife:0.35,muzzleType:"spark",    muzzleSize:4,  muzzleCount:8,  explodeColors:["#cccccc","#ffffff","rgba(10,10,10,0.06)"],    trailType:"spark",    trailRate:0.5, trailSize:3  },
-      pistol:            { color:"#d1d5db", color2:"#ffffff", impactType:"spark",    impactSize:4,  impactCount:12, impactSpeed:4.0, impactSwirlSpeed:0.07, impactNoise:0.12, impactLife:0.4, muzzleType:"spark",    muzzleSize:5,  muzzleCount:8,  explodeColors:["#dddddd","#ffffff","rgba(10,10,10,0.06)"],    trailType:"spark",    trailRate:0.45,trailSize:3  },
-      minigun:           { color:"#fca5a5", color2:"#ffffff", impactType:"spark",    impactSize:4,  impactCount:12, impactSpeed:5.0, impactSwirlSpeed:0.07, impactNoise:0.2,  impactLife:0.4, muzzleType:"spark",    muzzleSize:5,  muzzleCount:10, explodeColors:["#ffaaaa","#ffffff","rgba(15,5,5,0.06)"],      trailType:"spark",    trailRate:0.7, trailSize:3  },
-
-      // ── MAGIC / WAND ──────────────────────────────────────
-      stardust_wand:     { color:"#ffee88", color2:"#ffffff", impactType:"fluid",    impactSize:10, impactCount:14, impactSpeed:2.0, impactSwirlSpeed:0.30, impactNoise:0.25, impactLife:1.1, muzzleType:"fluid",    muzzleSize:14, muzzleCount:10, explodeColors:["#ffdd77","#ffffff","rgba(20,20,5,0.08)"],     trailType:"glow",     trailRate:0.8, trailSize:9  },
-      emerald_staff:     { color:"#44ff88", color2:"#00aa44", impactType:"blob",     impactSize:12, impactCount:12, impactSpeed:2.2, impactSwirlSpeed:0.25, impactNoise:0.2,  impactLife:1.0, muzzleType:"blob",     muzzleSize:16, muzzleCount:8,  explodeColors:["#33ee77","#006633","rgba(5,20,5,0.08)"],      trailType:"fluid",    trailRate:0.8, trailSize:11 },
-      ruby_repeater:     { color:"#ff4455", color2:"#ffaaaa", impactType:"fluid",    impactSize:10, impactCount:12, impactSpeed:3.0, impactSwirlSpeed:0.20, impactNoise:0.15, impactLife:0.8, muzzleType:"fluid",    muzzleSize:12, muzzleCount:8,  explodeColors:["#ff3344","#ffbbbb","rgba(20,5,5,0.08)"],      trailType:"fluid",    trailRate:0.85,trailSize:9  },
-      sapphire_bow:      { color:"#4499ff", color2:"#aaccff", impactType:"fluid",    impactSize:11, impactCount:12, impactSpeed:2.8, impactSwirlSpeed:0.18, impactNoise:0.12, impactLife:0.9, muzzleType:"fluid",    muzzleSize:14, muzzleCount:8,  explodeColors:["#3388ff","#aaddff","rgba(0,10,25,0.08)"],     trailType:"streamer", trailRate:0.8, trailSize:10 },
-      druid_staff:       { color:"#44cc88", color2:"#226644", impactType:"fluid",    impactSize:11, impactCount:12, impactSpeed:1.8, impactSwirlSpeed:0.32, impactNoise:0.28, impactLife:1.2, muzzleType:"fluid",    muzzleSize:15, muzzleCount:8,  explodeColors:["#33bb77","#115533","rgba(5,15,5,0.1)"],       trailType:"fluid",    trailRate:0.75,trailSize:10 },
-      starlight_wand:    { color:"#ffffff", color2:"#aabbff", impactType:"fluid",    impactSize:10, impactCount:14, impactSpeed:2.2, impactSwirlSpeed:0.25, impactNoise:0.2,  impactLife:1.0, muzzleType:"fluid",    muzzleSize:14, muzzleCount:10, explodeColors:["#ddeeff","#ffffff","rgba(10,10,20,0.08)"],    trailType:"glow",     trailRate:0.85,trailSize:9  },
-
-      // ── EXPLOSIVE SPECIALS ────────────────────────────────
-      nuke:              { color:"#ffee00", color2:"#ff8800", impactType:"blob",     impactSize:25, impactCount:22, impactSpeed:4.0, impactSwirlSpeed:0.12, impactNoise:0.1,  impactLife:2.0, muzzleType:"blob",     muzzleSize:40, muzzleCount:18, explodeColors:["#ffee00","#ff4400","rgba(30,25,0,0.2)"],      trailType:"blob",     trailRate:1.0, trailSize:22 },
-      world_slayer:      { color:"#ff0000", color2:"#220000", impactType:"blob",     impactSize:30, impactCount:24, impactSpeed:5.0, impactSwirlSpeed:0.10, impactNoise:0.08, impactLife:2.5, muzzleType:"blob",     muzzleSize:50, muzzleCount:20, explodeColors:["#ff2200","#110000","rgba(30,0,0,0.25)"],      trailType:"blob",     trailRate:1.0, trailSize:28 },
-      meteor_strike:     { color:"#ff6600", color2:"#ff2200", impactType:"blob",     impactSize:18, impactCount:20, impactSpeed:4.0, impactSwirlSpeed:0.18, impactNoise:0.2,  impactLife:1.5, muzzleType:"blob",     muzzleSize:25, muzzleCount:14, explodeColors:["#ff5500","#ff1100","rgba(25,10,0,0.15)"],     trailType:"blob",     trailRate:1.0, trailSize:16 },
-      meteor_rain:       { color:"#ff4400", color2:"#ff8800", impactType:"blob",     impactSize:16, impactCount:18, impactSpeed:3.5, impactSwirlSpeed:0.18, impactNoise:0.18, impactLife:1.4, muzzleType:"blob",     muzzleSize:22, muzzleCount:12, explodeColors:["#ff4400","#ff8800","rgba(20,8,0,0.12)"],      trailType:"fluid",    trailRate:1.0, trailSize:14 },
-      bazooka:           { color:"#ff6600", color2:"#ffcc00", impactType:"blob",     impactSize:14, impactCount:14, impactSpeed:3.2, impactSwirlSpeed:0.22, impactNoise:0.18, impactLife:1.1, muzzleType:"blob",     muzzleSize:22, muzzleCount:8,  explodeColors:["#ff8800","#ff2200","rgba(30,15,5,0.15)"],     trailType:"glow",     trailRate:0.9, trailSize:10 },
-
-      // ── WATER / TSUNAMI ───────────────────────────────────
-      tsunami_scroll:    { color:"#22aaff", color2:"#aaddff", impactType:"fluid",    impactSize:16, impactCount:18, impactSpeed:2.5, impactSwirlSpeed:0.28, impactNoise:0.3,  impactLife:1.4, muzzleType:"fluid",    muzzleSize:22, muzzleCount:12, explodeColors:["#33bbff","#aaeeff","rgba(0,15,30,0.12)"],     trailType:"fluid",    trailRate:0.9, trailSize:14 },
-      glacier_crash:     { color:"#99ddff", color2:"#ffffff", impactType:"blob",     impactSize:18, impactCount:14, impactSpeed:3.0, impactSwirlSpeed:0.08, impactNoise:0.1,  impactLife:1.3, muzzleType:"blob",     muzzleSize:24, muzzleCount:10, explodeColors:["#bbddff","#ffffff","rgba(5,20,40,0.12)"],     trailType:"fluid",    trailRate:0.8, trailSize:16 },
-
-      // ── DEFAULT FALLBACK ──────────────────────────────────
-      default:           { color: ownerColor, color2:"#ffffff", impactType:"blob",   impactSize:10, impactCount:10, impactSpeed:2.5, impactSwirlSpeed:0.20, impactNoise:0.15, impactLife:0.9, muzzleType:"blob",     muzzleSize:14, muzzleCount:8,  explodeColors:[ownerColor,"#ffffff","rgba(15,15,15,0.08)"],   trailType:"fluid",    trailRate:0.7, trailSize:9  },
-    };
-    return presets[weaponType] || presets.default;
-  }
-
-  private spawnMuzzleFlash(x: number, y: number, weaponType: string, ownerColor: string) {
-    const vfx = this.getWeaponVfx(weaponType, ownerColor);
-    this.createParticles(x, y, vfx.color, vfx.muzzleCount, 2.5, {
-      type: vfx.muzzleType, size: vfx.muzzleSize, spread: 1.4,
-      life: 0.35, additive: true, vSize: -vfx.muzzleSize * 0.04,
-      color2: vfx.color2, noise: 0.08, swirlSpeed: 0.1, drag: 0.88, gravity: -0.02,
-    });
-    // White hot core flash
-    this.createParticles(x, y, "#ffffff", 4, 1.0, {
-      type: "glow", size: vfx.muzzleSize * 0.7, spread: 0.8,
-      life: 0.2, additive: true, vSize: -0.3, drag: 0.9, gravity: 0,
-    });
-  }
-
-  private spawnWeaponImpact(
-    x: number, y: number,
-    weaponType: string, ownerColor: string,
-    impactVelX: number, impactVelY: number,
-  ) {
-    const vfx = this.getWeaponVfx(weaponType, ownerColor);
-    const speed = Math.sqrt(impactVelX * impactVelX + impactVelY * impactVelY) + 0.01;
-    const nx = impactVelX / speed;
-    const ny = impactVelY / speed;
-
-    // Primary splash blobs/fluid
-    this.createParticles(x, y, vfx.color, vfx.impactCount, vfx.impactSpeed, {
-      type: vfx.impactType, size: vfx.impactSize,
-      drag: 0.91, gravity: 0.12,
-      vSize: -vfx.impactSize * 0.022,
-      additive: true, life: vfx.impactLife,
-      color2: vfx.color2, noise: vfx.impactNoise,
-      swirlSpeed: vfx.impactSwirlSpeed,
-      vx: -nx * speed * 0.35, vy: -ny * speed * 0.35,
-    });
-
-    // White hot specular pop
-    this.createParticles(x, y, "#ffffff", Math.ceil(vfx.impactCount * 0.5), vfx.impactSpeed * 1.6, {
-      type: "spark", size: vfx.impactSize * 0.45, chromatic: true,
-      drag: 0.85, gravity: 0.22, additive: true, life: vfx.impactLife * 0.45,
-      vx: -nx * speed * 0.5, vy: -ny * speed * 0.5,
-    });
-
-    // Ambient bloom ring
-    this.createParticles(x, y, vfx.color, 2, 0.3, {
-      type: "ring", size: vfx.impactSize * 1.4,
-      drag: 0.99, gravity: 0, additive: true,
-      life: vfx.impactLife * 0.5, vSize: vfx.impactSize * 0.08,
-    });
-  }
-
-  private spawnWeaponExplosion(
-    x: number, y: number,
-    weaponType: string, ownerColor: string,
-    radius: number,
-  ) {
-    const vfx = this.getWeaponVfx(weaponType, ownerColor);
-    const [coreColor, emberColor, smokeColor] = vfx.explodeColors;
-    const scale = radius / 150;
-
-    // Flash
-    this.effects.push({ x, y, radius: radius * 0.55, life: 7, maxLife: 7, color: "rgba(255,255,255,0.95)" });
-
-    // Color shockwave rings
-    for (let i = 0; i < 3; i++) {
-      this.effects.push({
-        x, y, radius: radius * (0.4 + i * 0.45),
-        life: 12 + i * 7, maxLife: 12 + i * 7,
-        color: i === 0
-          ? coreColor.replace('#','rgba(').replace(/^rgba\(([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})\)$/, (_,r,g,b)=>`rgba(${parseInt(r,16)},${parseInt(g,16)},${parseInt(b,16)},0.8)`)
-          : i === 1 ? `${coreColor}99` : `${coreColor}44`,
-      });
-    }
-
-    // Fluid blob cores
-    this.createParticles(x, y, coreColor, Math.round(18 * scale), 4.0 * Math.sqrt(scale), {
-      drag: 0.91, gravity: 0.07, type: "blob", size: 16 * scale,
-      vSize: -0.22 * scale, additive: true, life: 1.3,
-      color2: vfx.color2, noise: 0.15, swirlSpeed: 0.16,
-    });
-
-    // Radial sparks
-    this.createParticles(x, y, "#ffffff", Math.round(22 * scale), 7.5 * Math.sqrt(scale), {
-      drag: 0.87, gravity: 0.28, type: "spark", size: 4 * scale,
-      additive: true, life: 0.55, chromatic: true,
-    });
-
-    // Chromatic streamers
-    this.createParticles(x, y, coreColor, Math.round(10 * scale), 5.5 * Math.sqrt(scale), {
-      drag: 0.93, gravity: 0.1, type: "streamer", size: 7 * scale,
-      additive: true, life: 0.85, color2: vfx.color2,
-    });
-
-    // Ember float
-    this.createParticles(x, y, emberColor, Math.round(28 * scale), 3.2 * Math.sqrt(scale), {
-      drag: 0.97, gravity: -0.02, type: "fluid", size: 6 * scale,
-      vSize: -0.07 * scale, additive: true, life: 1.8,
-      color2: coreColor, noise: 0.07,
-    });
-
-    // Smoke back-fill
-    this.createParticles(x, y, smokeColor, Math.round(9 * scale), 0.85, {
-      drag: 0.986, gravity: -0.035, type: "smoke", size: 18 * scale,
-      vSize: 0.38 * scale, life: 2.4, noise: 0.05,
-    });
   }
 
   private removeProjectile(projectile: Matter.Body) {
@@ -3884,28 +3662,31 @@ export class GameEngine {
     this.projectiles.forEach((p) => {
       const pData = p as any;
 
-      // Trail effects — per-weapon typed particles
+      // Trail effects
       if (!pData.trailPoints) pData.trailPoints = [];
       pData.trailPoints.push({ x: p.position.x, y: p.position.y });
-      if (pData.trailPoints.length > 18) pData.trailPoints.shift();
+      if (pData.trailPoints.length > 10) pData.trailPoints.shift();
 
-      {
-        const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
-        const ownerColor = shooter?.data.color || "#ffffff";
-        const vfx = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
+      if (Math.random() > 0.4) {
+        const pColor = pData.isDragonBreath
+          ? "#f97316"
+          : (p.render.fillStyle as string);
+        this.createParticles(p.position.x, p.position.y, pColor, 1, 1.2, {
+          type: pData.isDragonBreath ? "smoke" : "fluid",
+          size: pData.isDragonBreath ? 35 : (pData.circleRadius || 8),
+          gravity: pData.isDragonBreath ? -0.15 : 0.02,
+          life: pData.isDragonBreath ? 1.5 : 0.6,
+          drag: 0.97,
+          additive: true,
+          vSize: -0.1
+        });
 
-        if (Math.random() < vfx.trailRate) {
-          this.createParticles(p.position.x, p.position.y, vfx.color, 1, 0.5, {
-            type: vfx.trailType,
-            size: vfx.trailSize,
-            color2: vfx.color2,
-            gravity: vfx.trailType === "smoke" ? -0.12 : 0.03,
-            life: vfx.trailType === "smoke" ? 1.2 : 0.5,
-            drag: vfx.trailType === "smoke" ? 0.975 : 0.94,
-            additive: true,
-            vSize: -(vfx.trailSize * 0.025),
-            noise: vfx.trailType === "fluid" || vfx.trailType === "blob" ? 0.06 : 0,
-            swirlSpeed: vfx.trailType === "fluid" || vfx.trailType === "blob" ? 0.08 : 0,
+        if (pData.isElectricity || pData.isPlasma) {
+          this.createParticles(p.position.x, p.position.y, "#fff", 2, 3, {
+            type: "glow",
+            size: 8,
+            life: 0.2,
+            additive: true
           });
         }
       }
@@ -4036,7 +3817,7 @@ export class GameEngine {
         Date.now() - pData.lastEcho > 500
       ) {
         // Pulse effect
-        this.explode(p.position.x, p.position.y, 100, 20, pData.ownerId, pData.weaponType);
+        this.explode(p.position.x, p.position.y, 100, 20, pData.ownerId);
         pData.echoed = true;
       }
 
@@ -4114,7 +3895,7 @@ export class GameEngine {
       ) {
         this.removeProjectile(p);
       } else if ((p as any).timer && Date.now() > (p as any).timer) {
-        this.explode(p.position.x, p.position.y, 150, 60, (p as any).ownerId, (p as any).weaponType);
+        this.explode(p.position.x, p.position.y, 150, 60, (p as any).ownerId);
         this.removeProjectile(p);
       }
 
@@ -4398,57 +4179,42 @@ export class GameEngine {
     });
 
     // Particles update
-    this._frameCount++;
-    const MAX_PARTICLES = 800;
+    const MAX_PARTICLES = 400;
     if (this.particles.length > MAX_PARTICLES) {
-      // Prioritise additive (glow) particles — cull normal ones first
-      const additive = this.particles.filter(p => p.additive);
-      const normal   = this.particles.filter(p => !p.additive);
-      this.particles = [
-        ...normal.slice(-Math.floor(MAX_PARTICLES * 0.2)),
-        ...additive.slice(-Math.floor(MAX_PARTICLES * 0.8)),
-      ];
+      this.particles = this.particles.slice(-MAX_PARTICLES);
     }
 
     this.particles.forEach((p) => {
       p.x += p.vx;
       p.y += p.vy;
 
-      // Curl-noise turbulence — cheap rotation of velocity vector
+      // Noise / swirl turbulence
       if (p.noise) {
-        const angle = (Math.random() - 0.5) * p.noise;
-        const c = Math.cos(angle), s = Math.sin(angle);
-        const nvx = p.vx * c - p.vy * s;
-        const nvy = p.vx * s + p.vy * c;
-        p.vx = nvx; p.vy = nvy;
+        const swirl = (Math.random() - 0.5) * p.noise;
+        const cos = Math.cos(swirl);
+        const sin = Math.sin(swirl);
+        const newVx = p.vx * cos - p.vy * sin;
+        const newVy = p.vx * sin + p.vy * cos;
+        p.vx = newVx;
+        p.vy = newVy;
       }
 
-      // Fluid swirl — decaying orbital force for organic curl
+      // Fluid swirl orbital motion (ROUNDS-style curling)
       if (p.swirlSpeed) {
         p.swirlAngle = (p.swirlAngle || 0) + p.swirlSpeed;
-        const swirlForce = p.life * 0.35;
-        p.vx += Math.cos(p.swirlAngle!) * swirlForce * 0.065;
-        p.vy += Math.sin(p.swirlAngle!) * swirlForce * 0.065;
+        const swirlForce = p.life * 0.4;
+        p.vx += Math.cos(p.swirlAngle) * swirlForce * 0.08;
+        p.vy += Math.sin(p.swirlAngle) * swirlForce * 0.08;
       }
 
       p.vx *= p.drag;
       p.vy *= p.drag;
       p.vy += p.gravity;
-
-      // Surface-tension speed cap for fluid/blob types
-      if (p.type === "blob" || p.type === "fluid") {
-        const spd2 = p.vx * p.vx + p.vy * p.vy;
-        if (spd2 > 324) { // 18^2
-          const inv = 18 / Math.sqrt(spd2);
-          p.vx *= inv; p.vy *= inv;
-        }
-      }
-
       if (p.vRotation) p.rotation = (p.rotation || 0) + p.vRotation;
-      if (p.vSize)     p.size = Math.max(0.1, p.size + p.vSize);
+      if (p.vSize) p.size = Math.max(0.1, p.size + p.vSize);
       p.life -= 0.02 / p.maxLife;
     });
-    this.particles = this.particles.filter((p) => p.life > 0 && p.size > 0.15);
+    this.particles = this.particles.filter((p) => p.life > 0);
 
     this.trails.forEach((t) => (t.alpha -= 0.02));
     this.trails = this.trails.filter((t) => t.alpha > 0);
@@ -5144,185 +4910,189 @@ export class GameEngine {
     const additiveParticles = this.particles.filter(p => p.additive);
 
     const renderParticleBatch = (batch: any[], isAdditive: boolean) => {
-      this.ctx.globalCompositeOperation = isAdditive ? "lighter" : "source-over";
+      if (isAdditive) {
+        this.ctx.globalCompositeOperation = "lighter";
+      } else {
+        this.ctx.globalCompositeOperation = "source-over";
+      }
 
-      // ── SMOKE ─────────────────────────────────────────────────────────────
-      // Drawn first so it sits behind all additive glow
       batch.forEach((p) => {
-        if (p.type !== "smoke") return;
-        const lifeRatio = p.life / p.maxLife;
-        const drawR = p.size * (1 + (1 - lifeRatio) * 1.1);
-        const stamp = this._getSmokeStamp(p.color);
-        this.ctx.globalAlpha = lifeRatio * lifeRatio * 0.55;
-        if (p.rotation) {
-          this.ctx.save();
-          this.ctx.translate(p.x, p.y);
-          this.ctx.rotate(p.rotation);
-          this.ctx.drawImage(stamp, -drawR, -drawR, drawR * 2, drawR * 2);
-          this.ctx.restore();
-        } else {
-          this.ctx.drawImage(stamp, p.x - drawR, p.y - drawR, drawR * 2, drawR * 2);
-        }
-      });
+        const lifeRatio = p.life / p.maxLife; // 1 → 0 as it dies
+        const baseAlpha = p.life;
 
-      // ── RINGS ─────────────────────────────────────────────────────────────
-      batch.forEach((p) => {
-        if (p.type !== "ring") return;
-        const lifeRatio = p.life / p.maxLife;
-        const expandT  = 1 - lifeRatio;
-        const drawR    = p.size * (0.05 + expandT * 1.35);
-        const stamp    = this._getRingStamp(p.color, p.color2);
-        // Squared falloff = sharp leading edge, fast fade-out
-        this.ctx.globalAlpha = lifeRatio * lifeRatio * p.life;
-        this.ctx.drawImage(stamp, p.x - drawR, p.y - drawR, drawR * 2, drawR * 2);
-      });
+        this.ctx.save();
+        this.ctx.translate(p.x, p.y);
+        if (p.rotation) this.ctx.rotate(p.rotation);
 
-      // ── BLOBS / FLUID / GLOW / CIRCLE ─────────────────────────────────────
-      // All use the pre-baked radial gradient stamp → zero createRadialGradient per frame.
-      batch.forEach((p) => {
-        if (p.type !== "blob" && p.type !== "fluid" && p.type !== "glow" && p.type !== "circle") return;
+        if (p.type === "spark") {
+          // Elongated spark: bright tapered line with a glowing head
+          const len = p.size * (2 + lifeRatio * 3);
+          const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy);
+          const angle = Math.atan2(p.vy, p.vx);
 
-        const lifeRatio = p.life / p.maxLife;
-        const isGlow    = p.type === "glow";
-        const stamp     = this._getGlowStamp(p.color, p.color2);
-        const baseR     = p.size * (isGlow ? 2.6 : p.type === "blob" ? 1.0 : 1.45);
+          this.ctx.globalAlpha = baseAlpha * 0.9;
+          this.ctx.strokeStyle = p.color;
+          this.ctx.lineWidth = Math.max(0.5, p.size * 0.4 * lifeRatio);
+          this.ctx.lineCap = "round";
+          this.ctx.beginPath();
+          this.ctx.moveTo(0, 0);
+          this.ctx.lineTo(-Math.cos(angle) * len, -Math.sin(angle) * len);
+          this.ctx.stroke();
 
-        this.ctx.globalAlpha = p.life * (isGlow ? 0.42 : 1.0);
+          // Bright spark head
+          this.ctx.globalAlpha = baseAlpha;
+          this.ctx.fillStyle = "#ffffff";
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, p.size * 0.35 * lifeRatio, 0, Math.PI * 2);
+          this.ctx.fill();
 
-        if (p.type === "blob" && p.swirlAngle !== undefined) {
-          // Organic squish driven by swirl phase
-          const squish = Math.sin(p.swirlAngle) * 0.26;
-          const sx = baseR * (1 + squish);
-          const sy = baseR * (1 - squish * 0.65);
-          this.ctx.save();
-          this.ctx.translate(p.x, p.y);
-          if (p.rotation) this.ctx.rotate(p.rotation);
-          this.ctx.drawImage(stamp, -sx, -sy, sx * 2, sy * 2);
-          // Liquid specular highlight
-          if (lifeRatio > 0.2) {
-            this.ctx.globalAlpha = p.life * lifeRatio * 0.75;
-            this.ctx.fillStyle = "#ffffff";
+          // Chromatic aberration — offset R/G/B channels
+          if (p.chromatic) {
+            this.ctx.globalAlpha = baseAlpha * 0.4;
+            this.ctx.strokeStyle = "#ff2244";
             this.ctx.beginPath();
-            this.ctx.arc(-sx * 0.26, -sy * 0.26, Math.max(1, sx * 0.17), 0, Math.PI * 2);
+            this.ctx.moveTo(-2, 0);
+            this.ctx.lineTo(-Math.cos(angle) * len - 2, -Math.sin(angle) * len);
+            this.ctx.stroke();
+            this.ctx.strokeStyle = "#22aaff";
+            this.ctx.beginPath();
+            this.ctx.moveTo(2, 0);
+            this.ctx.lineTo(-Math.cos(angle) * len + 2, -Math.sin(angle) * len);
+            this.ctx.stroke();
+          }
+
+        } else if (p.type === "smoke") {
+          // Soft volumetric smoke puff with radial gradient
+          const size = p.size * (1 + (1 - lifeRatio) * 0.8);
+          const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, size);
+          grad.addColorStop(0, p.color.replace('rgba', 'rgba').replace(/[\d.]+\)$/, `${baseAlpha * 0.5})`));
+          grad.addColorStop(0.5, p.color.replace(/[\d.]+\)$/, `${baseAlpha * 0.2})`));
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = 1.0;
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, size, 0, Math.PI * 2);
+          this.ctx.fill();
+
+        } else if (p.type === "blob") {
+          // Organic blob — metaball-like with a squish
+          const scaleX = 1 + Math.sin(p.swirlAngle || 0) * 0.3;
+          const scaleY = 1 - Math.sin(p.swirlAngle || 0) * 0.3;
+          const size = p.size;
+          const grad = this.ctx.createRadialGradient(-size * 0.2, -size * 0.2, 0, 0, 0, size * scaleX);
+          grad.addColorStop(0, "#ffffff");
+          grad.addColorStop(0.25, p.color);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = baseAlpha;
+          this.ctx.scale(scaleX, scaleY);
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, size, 0, Math.PI * 2);
+          this.ctx.fill();
+
+        } else if (p.type === "fluid" || p.type === "glow") {
+          // ROUNDS-style fluid blob: radial gradient with chromatic halo
+          const size = p.size;
+          const isGlow = p.type === "glow";
+
+          // Outer chromatic halo (offset R and B channels)
+          if (isAdditive && size > 4) {
+            this.ctx.globalAlpha = baseAlpha * 0.15;
+            this.ctx.fillStyle = "#ff3366";
+            this.ctx.beginPath();
+            this.ctx.arc(-size * 0.15, 0, size * (isGlow ? 2.0 : 1.2), 0, Math.PI * 2);
+            this.ctx.fill();
+            this.ctx.fillStyle = "#33aaff";
+            this.ctx.beginPath();
+            this.ctx.arc(size * 0.15, 0, size * (isGlow ? 2.0 : 1.2), 0, Math.PI * 2);
             this.ctx.fill();
           }
-          this.ctx.restore();
-        } else {
-          this.ctx.drawImage(stamp, p.x - baseR, p.y - baseR, baseR * 2, baseR * 2);
-          // Specular for fluid
-          if (p.type === "fluid" && lifeRatio > 0.25) {
-            this.ctx.globalAlpha = p.life * lifeRatio * 0.6;
+
+          // Main radial gradient body
+          const outerR = size * (isGlow ? 3.0 : 1.8);
+          const grad = this.ctx.createRadialGradient(-size * 0.1, -size * 0.1, 0, 0, 0, outerR);
+          grad.addColorStop(0, "#ffffff");
+          grad.addColorStop(0.2, p.color);
+          if (p.color2) {
+            grad.addColorStop(0.6, p.color2);
+          }
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = baseAlpha * (isGlow ? 0.5 : 1.0);
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, outerR, 0, Math.PI * 2);
+          this.ctx.fill();
+
+          // Bright specular dot (gives the "liquid" look)
+          if (!isGlow && lifeRatio > 0.3) {
+            this.ctx.globalAlpha = baseAlpha * 0.9 * lifeRatio;
             this.ctx.fillStyle = "#ffffff";
             this.ctx.beginPath();
-            this.ctx.arc(p.x - baseR * 0.22, p.y - baseR * 0.22, Math.max(1, baseR * 0.15), 0, Math.PI * 2);
+            this.ctx.arc(-size * 0.25, -size * 0.25, size * 0.2, 0, Math.PI * 2);
             this.ctx.fill();
           }
-        }
-      });
 
-      // ── SPARKS ────────────────────────────────────────────────────────────
-      this.ctx.lineCap = "round";
-      batch.forEach((p) => {
-        if (p.type !== "spark") return;
-        const lifeRatio = p.life / p.maxLife;
-        const spd   = Math.sqrt(p.vx * p.vx + p.vy * p.vy) + 0.01;
-        const angle = Math.atan2(p.vy, p.vx);
-        // Speed-stretched length — faster = longer streak
-        const len   = Math.min(p.size * (1.4 + lifeRatio * 2.2) + spd * 1.1, 62);
-        const w     = Math.max(0.4, p.size * 0.36 * lifeRatio);
-        const ex    = p.x - Math.cos(angle) * len;
-        const ey    = p.y - Math.sin(angle) * len;
-
-        // Outer colored glow streak
-        this.ctx.globalAlpha = p.life * 0.75;
-        this.ctx.strokeStyle = p.color;
-        this.ctx.lineWidth   = w * 2.4;
-        this.ctx.beginPath();
-        this.ctx.moveTo(p.x, p.y);
-        this.ctx.lineTo(ex, ey);
-        this.ctx.stroke();
-
-        // Bright white core
-        this.ctx.globalAlpha = p.life;
-        this.ctx.strokeStyle = "#ffffff";
-        this.ctx.lineWidth   = w;
-        this.ctx.beginPath();
-        this.ctx.moveTo(p.x, p.y);
-        this.ctx.lineTo(p.x - Math.cos(angle) * len * 0.55, p.y - Math.sin(angle) * len * 0.55);
-        this.ctx.stroke();
-
-        // Hot-point head dot
-        this.ctx.fillStyle  = "#ffffff";
-        this.ctx.globalAlpha = p.life * lifeRatio;
-        this.ctx.beginPath();
-        this.ctx.arc(p.x, p.y, Math.max(0.5, w * 1.15), 0, Math.PI * 2);
-        this.ctx.fill();
-
-        // Chromatic fringe — perpendicular offset so it fans outward
-        if (p.chromatic && len > 6) {
-          const ox = Math.sin(angle) * 2.0, oy = -Math.cos(angle) * 2.0;
-          this.ctx.globalAlpha = p.life * 0.32;
-          this.ctx.strokeStyle = p.color2 || "#ff2244";
-          this.ctx.lineWidth   = w * 0.65;
+        } else if (p.type === "ring") {
+          // Expanding shockwave ring
+          const radius = p.size * (1 + (1 - lifeRatio) * 2);
+          const thickness = Math.max(1, p.size * 0.15 * lifeRatio);
+          this.ctx.globalAlpha = baseAlpha * lifeRatio;
+          this.ctx.strokeStyle = p.color;
+          this.ctx.lineWidth = thickness;
           this.ctx.beginPath();
-          this.ctx.moveTo(p.x + ox, p.y + oy);
-          this.ctx.lineTo(ex + ox, ey + oy);
+          this.ctx.arc(0, 0, radius, 0, Math.PI * 2);
           this.ctx.stroke();
-          this.ctx.strokeStyle = "#22aaff";
+          // Inner bright ring
+          this.ctx.globalAlpha = baseAlpha * lifeRatio * 0.5;
+          this.ctx.strokeStyle = "#ffffff";
+          this.ctx.lineWidth = thickness * 0.4;
           this.ctx.beginPath();
-          this.ctx.moveTo(p.x - ox, p.y - oy);
-          this.ctx.lineTo(ex - ox, ey - oy);
+          this.ctx.arc(0, 0, radius * 0.9, 0, Math.PI * 2);
           this.ctx.stroke();
-        }
-      });
 
-      // ── STREAMERS ─────────────────────────────────────────────────────────
-      batch.forEach((p) => {
-        if (p.type !== "streamer") return;
-        const lifeRatio = p.life / p.maxLife;
-        const spd   = Math.sqrt(p.vx * p.vx + p.vy * p.vy) + 0.01;
-        const angle = Math.atan2(p.vy, p.vx);
-        const len   = p.size * (2.2 + lifeRatio * 3.8) + spd * 0.7;
-        const tailW = Math.max(0.5, p.size * 0.30 * lifeRatio);
-        const dx = Math.cos(angle), dy = Math.sin(angle);
-        const px = -dy,             py = dx;
-        const tx = p.x - dx * len,  ty = p.y - dy * len;
+        } else if (p.type === "streamer") {
+          // Long ribbon streamer — ROUNDS-style energy tendril
+          const len = p.size * (3 + lifeRatio * 5);
+          const spd = Math.sqrt(p.vx * p.vx + p.vy * p.vy) + 0.01;
+          const dirX = -p.vx / spd;
+          const dirY = -p.vy / spd;
+          const perpX = -dirY;
+          const perpY = dirX;
+          const w = Math.max(0.5, p.size * 0.3 * lifeRatio);
 
-        // Ribbon body
-        this.ctx.globalAlpha = p.life * 0.9;
-        this.ctx.beginPath();
-        this.ctx.moveTo(p.x + px * tailW, p.y + py * tailW);
-        this.ctx.lineTo(tx, ty);
-        this.ctx.lineTo(p.x - px * tailW, p.y - py * tailW);
-        this.ctx.closePath();
+          const grad = this.ctx.createLinearGradient(0, 0, dirX * len, dirY * len);
+          grad.addColorStop(0, p.color);
+          grad.addColorStop(0.4, p.color2 || p.color);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = baseAlpha;
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.moveTo(perpX * w, perpY * w);
+          this.ctx.lineTo(dirX * len, dirY * len);
+          this.ctx.lineTo(-perpX * w, -perpY * w);
+          this.ctx.closePath();
+          this.ctx.fill();
 
-        if (Math.abs(tx - p.x) + Math.abs(ty - p.y) > 1) {
-          const g = this.ctx.createLinearGradient(p.x, p.y, tx, ty);
-          g.addColorStop(0,    "#ffffff");
-          g.addColorStop(0.12, p.color);
-          g.addColorStop(0.5,  p.color2 || p.color);
-          g.addColorStop(1,    "rgba(0,0,0,0)");
-          this.ctx.fillStyle = g;
         } else {
-          this.ctx.fillStyle = p.color;
+          // Default: crisp additive circle with soft halo
+          const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, p.size / 2 + 1);
+          grad.addColorStop(0, "#ffffff");
+          grad.addColorStop(0.4, p.color);
+          grad.addColorStop(1, "rgba(0,0,0,0)");
+          this.ctx.globalAlpha = baseAlpha;
+          this.ctx.fillStyle = grad;
+          this.ctx.beginPath();
+          this.ctx.arc(0, 0, p.size / 2 + 1, 0, Math.PI * 2);
+          this.ctx.fill();
         }
-        this.ctx.fill();
 
-        // Bright spine along the top edge
-        this.ctx.globalAlpha = p.life * lifeRatio * 0.55;
-        this.ctx.strokeStyle = "#ffffff";
-        this.ctx.lineWidth   = Math.max(0.3, tailW * 0.28);
-        this.ctx.lineCap     = "round";
-        this.ctx.beginPath();
-        this.ctx.moveTo(p.x, p.y);
-        this.ctx.lineTo(p.x - dx * len * 0.45, p.y - dy * len * 0.45);
-        this.ctx.stroke();
+        this.ctx.restore();
       });
     };
 
     renderParticleBatch(normalParticles, false);
     renderParticleBatch(additiveParticles, true);
-
+    
     this.ctx.restore();
 
     // Draw Portals
@@ -5372,125 +5142,99 @@ export class GameEngine {
       this.ctx.restore();
     });
 
-    // Draw Projectile Trails — catmull-rom spline + stamp glow
+    // Draw Projectile Trails — ROUNDS-style fluid motion blur
     this.ctx.save();
     this.ctx.globalCompositeOperation = "lighter";
     this.projectiles.forEach((p) => {
       const pData = p as any;
-      if (!pData.trailPoints || pData.trailPoints.length < 3) return;
+      if (!pData.trailPoints || pData.trailPoints.length < 2) return;
 
-      const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
-      const ownerColor = shooter?.data.color || (p.render.fillStyle as string) || "#ffffff";
-      const vfx    = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
-      const color  = vfx.color;
-      const color2 = vfx.color2;
+      const color = (p.render.fillStyle as string) || "#fff";
       const radius = p.circleRadius || 6;
-      const pts    = pData.trailPoints as { x: number; y: number }[];
-      const n      = pts.length;
+      const pts = pData.trailPoints;
 
-      // ── Pass 1: Wide soft outer glow (single path, varying lineWidth) ──
-      // We approximate the spline with straight segments since canvas
-      // doesn't support variable-width beziers natively.
-      this.ctx.lineCap  = "round";
+      // Pass 1: Wide soft outer glow
+      this.ctx.beginPath();
+      this.ctx.lineCap = "round";
       this.ctx.lineJoin = "round";
-
-      for (let i = 1; i < n; i++) {
-        const t0 = (i - 1) / n, t1 = i / n;
-        this.ctx.globalAlpha = t1 * 0.13;
+      pts.forEach((pt: any, i: number) => {
+        const t = i / pts.length;
+        this.ctx.lineWidth = radius * t * 5;
+        this.ctx.globalAlpha = t * 0.12;
         this.ctx.strokeStyle = color;
-        this.ctx.lineWidth   = radius * t1 * 5.5;
-        this.ctx.beginPath();
-        this.ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
-        this.ctx.lineTo(pts[i].x,     pts[i].y);
-        this.ctx.stroke();
-      }
+        if (i === 0) this.ctx.moveTo(pt.x, pt.y);
+        else this.ctx.lineTo(pt.x, pt.y);
+      });
+      this.ctx.stroke();
 
-      // ── Pass 2: Chromatic color2 offset ──────────────────────────────
-      for (let i = 1; i < n; i++) {
-        const t1 = i / n;
-        const dx = pts[i].x - pts[i - 1].x;
-        const dy = pts[i].y - pts[i - 1].y;
-        const len = Math.sqrt(dx * dx + dy * dy) + 0.01;
-        const ox = (-dy / len) * 2.2, oy = (dx / len) * 2.2;
-        this.ctx.globalAlpha = t1 * 0.20;
-        this.ctx.strokeStyle = color2 || "#ff3366";
-        this.ctx.lineWidth   = radius * t1 * 2.2;
-        this.ctx.beginPath();
-        this.ctx.moveTo(pts[i - 1].x + ox, pts[i - 1].y + oy);
-        this.ctx.lineTo(pts[i].x     + ox, pts[i].y     + oy);
-        this.ctx.stroke();
-        this.ctx.strokeStyle = color;
-        this.ctx.beginPath();
-        this.ctx.moveTo(pts[i - 1].x - ox, pts[i - 1].y - oy);
-        this.ctx.lineTo(pts[i].x     - ox, pts[i].y     - oy);
-        this.ctx.stroke();
-      }
+      // Pass 2: Chromatic red offset
+      this.ctx.globalAlpha = 0;
+      this.ctx.beginPath();
+      pts.forEach((pt: any, i: number) => {
+        const t = i / pts.length;
+        this.ctx.lineWidth = radius * t * 2.5;
+        this.ctx.globalAlpha = t * 0.18;
+        this.ctx.strokeStyle = "#ff3366";
+        if (i === 0) this.ctx.moveTo(pt.x - 2, pt.y);
+        else this.ctx.lineTo(pt.x - 2, pt.y);
+      });
+      this.ctx.stroke();
 
-      // ── Pass 3: Bright white core — catmull-rom spline ───────────────
-      if (n >= 4) {
-        this.ctx.strokeStyle = "#ffffff";
-        this.ctx.lineWidth   = Math.max(0.8, radius * 0.9);
-        this.ctx.beginPath();
-        this.ctx.moveTo(pts[0].x, pts[0].y);
-        for (let i = 1; i < n - 2; i++) {
-          const p0 = pts[i - 1], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
-          const cp1x = p1.x + (p2.x - p0.x) / 6;
-          const cp1y = p1.y + (p2.y - p0.y) / 6;
-          const cp2x = p2.x - (p3.x - p1.x) / 6;
-          const cp2y = p2.y - (p3.y - p1.y) / 6;
-          this.ctx.globalAlpha = (i / n) * 0.72;
-          this.ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
-        }
-        this.ctx.stroke();
-      } else {
-        this.ctx.strokeStyle = "#ffffff";
-        this.ctx.lineWidth   = Math.max(0.8, radius * 0.9);
-        for (let i = 1; i < n; i++) {
-          this.ctx.globalAlpha = (i / n) * 0.72;
-          this.ctx.beginPath();
-          this.ctx.moveTo(pts[i - 1].x, pts[i - 1].y);
-          this.ctx.lineTo(pts[i].x, pts[i].y);
-          this.ctx.stroke();
-        }
-      }
+      // Pass 3: Chromatic blue offset
+      this.ctx.beginPath();
+      pts.forEach((pt: any, i: number) => {
+        const t = i / pts.length;
+        this.ctx.lineWidth = radius * t * 2.5;
+        this.ctx.globalAlpha = t * 0.18;
+        this.ctx.strokeStyle = "#33aaff";
+        if (i === 0) this.ctx.moveTo(pt.x + 2, pt.y);
+        else this.ctx.lineTo(pt.x + 2, pt.y);
+      });
+      this.ctx.stroke();
 
-      // ── Pass 4: Stamp glow blobs at key trail points (every 3rd point) ─
-      const stamp = this._getGlowStamp(color, color2);
-      const blobR = radius * 1.4;
-      for (let i = Math.floor(n / 3); i < n; i += 3) {
-        const t = i / n;
-        this.ctx.globalAlpha = t * 0.22;
-        this.ctx.drawImage(stamp, pts[i].x - blobR, pts[i].y - blobR, blobR * 2, blobR * 2);
-      }
+      // Pass 4: Bright core trail
+      this.ctx.beginPath();
+      this.ctx.strokeStyle = "#ffffff";
+      pts.forEach((pt: any, i: number) => {
+        const t = i / pts.length;
+        this.ctx.lineWidth = radius * t * 1.2;
+        this.ctx.globalAlpha = t * 0.7;
+        if (i === 0) this.ctx.moveTo(pt.x, pt.y);
+        else this.ctx.lineTo(pt.x, pt.y);
+      });
+      this.ctx.stroke();
     });
     this.ctx.restore();
 
-    // Draw Effects (Shockwave Rings) — stamp-cached with bloom
+    // Draw Effects (Shockwave Rings) — ROUNDS style
     this.ctx.save();
     this.ctx.globalCompositeOperation = "lighter";
     this.effects.forEach((e) => {
-      const ratio   = e.life / e.maxLife;   // 1→0
-      const expandT = 1 - ratio;            // 0→1
-      const currentR = e.radius * (0.08 + expandT * 1.28);
+      const ratio = e.life / e.maxLife;
+      const expandT = 1 - ratio;  // 0 → 1 as it expands
+      const currentR = e.radius * (0.1 + expandT * 1.2);
 
-      // Diffuse bloom fill (stamp)
-      const bloomStamp = this._getGlowStamp(e.color.replace(/[\d.]+\)$/, "0.9)"), undefined);
-      const bloomR = currentR * 1.5;
-      this.ctx.globalAlpha = ratio * ratio * 0.22;
-      this.ctx.drawImage(bloomStamp, e.x - bloomR, e.y - bloomR, bloomR * 2, bloomR * 2);
-
-      // Main ring (stamp)
-      const ringStamp = this._getRingStamp(e.color, undefined);
-      this.ctx.globalAlpha = ratio * ratio * 0.8;
-      this.ctx.drawImage(ringStamp, e.x - currentR, e.y - currentR, currentR * 2, currentR * 2);
-
-      // Thin hot white inner ring at 80% of main radius
-      const innerR = currentR * 0.80;
-      this.ctx.globalAlpha = ratio * 0.38;
-      this.ctx.strokeStyle = "#ffffff";
-      this.ctx.lineWidth   = Math.max(0.5, e.radius * 0.025 * ratio);
+      // Outer diffuse bloom
+      this.ctx.globalAlpha = ratio * 0.25;
       this.ctx.beginPath();
-      this.ctx.arc(e.x, e.y, innerR, 0, Math.PI * 2);
+      this.ctx.arc(e.x, e.y, currentR * 1.3, 0, Math.PI * 2);
+      this.ctx.fillStyle = e.color;
+      this.ctx.fill();
+
+      // Main ring
+      this.ctx.globalAlpha = ratio * 0.7;
+      this.ctx.strokeStyle = e.color;
+      this.ctx.lineWidth = Math.max(1, e.radius * 0.08 * ratio);
+      this.ctx.beginPath();
+      this.ctx.arc(e.x, e.y, currentR, 0, Math.PI * 2);
+      this.ctx.stroke();
+
+      // Inner bright white edge
+      this.ctx.globalAlpha = ratio * 0.4;
+      this.ctx.strokeStyle = "#ffffff";
+      this.ctx.lineWidth = Math.max(0.5, e.radius * 0.03 * ratio);
+      this.ctx.beginPath();
+      this.ctx.arc(e.x, e.y, currentR * 0.88, 0, Math.PI * 2);
       this.ctx.stroke();
     });
     this.ctx.restore();
@@ -5714,164 +5458,105 @@ export class GameEngine {
 
     this.projectiles.forEach((p) => {
       const pData = p as any;
+      const color = (p.render.fillStyle as string) || "white";
       const now = Date.now();
-
-      const shooter = this.players.find(pl => pl.data.id === pData.ownerId);
-      const ownerColor = shooter?.data.color || (p.render.fillStyle as string) || "#ffffff";
-      const vfx = this.getWeaponVfx(pData.weaponType || "default", ownerColor);
-      const color  = vfx.color;
-      const color2 = vfx.color2;
-
+      
       this.ctx.save();
       this.ctx.globalCompositeOperation = "lighter";
 
-      // ── BLACK HOLE / ERASER ─────────────────────────────────────────────
       if (pData.isBlackHole || pData.isEraser) {
-        const radius = pData.isEraser ? 60 : 40;
-        const bColor = pData.isEraser ? "#ff2200" : "#a855f7";
-        // Swirling accretion disk stamp
-        const stamp = this._getGlowStamp(bColor, pData.isEraser ? "#ff6600" : "#440088");
-        this.ctx.save();
         this.ctx.translate(p.position.x, p.position.y);
-        this.ctx.rotate(now / 400);
-        this.ctx.globalAlpha = 0.55;
-        this.ctx.drawImage(stamp, -radius * 2.5, -radius * 2.5, radius * 5, radius * 5);
-        this.ctx.restore();
-        // Dark void core (source-over to punch hole)
-        this.ctx.globalCompositeOperation = "source-over";
-        this.ctx.globalAlpha = 1.0;
-        this.ctx.fillStyle = "#000000";
+        this.ctx.rotate(now / 150);
+        const radius = pData.isEraser ? 60 : 40;
+        const grad = this.ctx.createRadialGradient(0, 0, 0, 0, 0, radius);
+        grad.addColorStop(0, "#000");
+        grad.addColorStop(0.7, pData.isEraser ? "#ff0000" : "#a855f7");
+        grad.addColorStop(1, "transparent");
+        this.ctx.fillStyle = grad;
         this.ctx.beginPath();
-        this.ctx.arc(p.position.x, p.position.y, radius * 0.55, 0, Math.PI * 2);
+        this.ctx.arc(0, 0, radius, 0, Math.PI * 2);
         this.ctx.fill();
-        this.ctx.globalCompositeOperation = "lighter";
-        // Rotating spokes
-        this.ctx.strokeStyle = bColor;
-        this.ctx.lineWidth = 1.5;
-        this.ctx.globalAlpha = 0.4;
-        for (let i = 0; i < 6; i++) {
-          const a = (i * Math.PI / 3) + now / 900;
+
+        this.ctx.strokeStyle = pData.isEraser ? "#ff4d4d" : "#d8b4fe";
+        this.ctx.lineWidth = 2;
+        for (let i = 0; i < 8; i++) {
+          const a = (i * Math.PI) / 4 + now / 1000;
           this.ctx.beginPath();
-          this.ctx.moveTo(p.position.x + Math.cos(a) * radius * 0.6, p.position.y + Math.sin(a) * radius * 0.6);
-          this.ctx.lineTo(p.position.x + Math.cos(a) * radius * 2.2, p.position.y + Math.sin(a) * radius * 2.2);
+          this.ctx.moveTo(0, 0);
+          this.ctx.lineTo(Math.cos(a) * radius * 1.5, Math.sin(a) * radius * 1.5);
           this.ctx.stroke();
         }
-
-      // ── RAILGUN / SNIPER ────────────────────────────────────────────────
       } else if (pData.isRailgun) {
+        // Railgun: sharp bright needle with chromatic fringe
         const vMag = Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2) + 0.01;
-        const len  = 55 + vMag * 1.8;
-        const nx = p.velocity.x / vMag, ny = p.velocity.y / vMag;
-        const px = -ny, py = nx; // perpendicular for fringe offset
+        const len = 40 + vMag * 1.5;
+        const nx = p.velocity.x / vMag;
+        const ny = p.velocity.y / vMag;
+        const angle = Math.atan2(p.velocity.y, p.velocity.x);
 
-        // Wide outer bloom
-        this.ctx.globalAlpha = 0.18;
-        const rStamp = this._getGlowStamp(color, color2);
-        this.ctx.drawImage(rStamp, p.position.x - 18, p.position.y - 18, 36, 36);
+        // Chromatic R/B fringe
+        this.ctx.globalAlpha = 0.35;
+        this.ctx.strokeStyle = "#ff2244";
+        this.ctx.lineWidth = 3;
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.position.x - 1.5, p.position.y);
+        this.ctx.lineTo(p.position.x - nx * len - 1.5, p.position.y - ny * len);
+        this.ctx.stroke();
+        this.ctx.strokeStyle = "#22aaff";
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.position.x + 1.5, p.position.y);
+        this.ctx.lineTo(p.position.x - nx * len + 1.5, p.position.y - ny * len);
+        this.ctx.stroke();
 
-        // Chromatic fringe lines
-        this.ctx.lineCap = "round";
-        [[color2 || "#ff2244", px * 2.5, py * 2.5, 2.5, 0.3],
-         ["#22aaff",           -px * 2.5,-py * 2.5, 2.5, 0.3],
-         ["#ffffff",           0,          0,         1.2, 1.0]
-        ].forEach(([col, ox, oy, lw, alpha]) => {
-          this.ctx.globalAlpha = alpha as number;
-          this.ctx.strokeStyle = col as string;
-          this.ctx.lineWidth   = lw as number;
+        // Core white needle
+        this.ctx.globalAlpha = 1.0;
+        this.ctx.strokeStyle = "#ffffff";
+        this.ctx.lineWidth = 2 + Math.random() * 1.5;
+        this.ctx.beginPath();
+        this.ctx.moveTo(p.position.x, p.position.y);
+        this.ctx.lineTo(p.position.x - nx * len, p.position.y - ny * len);
+        this.ctx.stroke();
+
+      } else {
+        const radius = p.circleRadius || 6;
+        const vMag = Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2);
+
+        // --- ROUNDS-style projectile: radial gradient orb + motion trail glow ---
+
+        // Outer soft chromatic halo (lateral fringe)
+        if (radius > 4) {
+          this.ctx.globalAlpha = 0.18;
+          this.ctx.fillStyle = "#ff3366";
           this.ctx.beginPath();
-          this.ctx.moveTo(p.position.x + (ox as number), p.position.y + (oy as number));
-          this.ctx.lineTo(p.position.x - nx * len + (ox as number), p.position.y - ny * len + (oy as number));
-          this.ctx.stroke();
-        });
-        // Hot-point head
+          this.ctx.arc(p.position.x - radius * 0.2, p.position.y, radius * 1.8, 0, Math.PI * 2);
+          this.ctx.fill();
+          this.ctx.fillStyle = "#3388ff";
+          this.ctx.beginPath();
+          this.ctx.arc(p.position.x + radius * 0.2, p.position.y, radius * 1.8, 0, Math.PI * 2);
+          this.ctx.fill();
+        }
+
+        // Main radial gradient orb
+        const grad = this.ctx.createRadialGradient(
+          p.position.x - radius * 0.25, p.position.y - radius * 0.25, 0,
+          p.position.x, p.position.y, radius * 2.2
+        );
+        grad.addColorStop(0, "#ffffff");
+        grad.addColorStop(0.25, color);
+        grad.addColorStop(0.7, color);
+        grad.addColorStop(1, "rgba(0,0,0,0)");
+        this.ctx.globalAlpha = 0.95;
+        this.ctx.fillStyle = grad;
+        this.ctx.beginPath();
+        this.ctx.arc(p.position.x, p.position.y, radius * 2.2, 0, Math.PI * 2);
+        this.ctx.fill();
+
+        // Bright specular core
         this.ctx.globalAlpha = 1.0;
         this.ctx.fillStyle = "#ffffff";
         this.ctx.beginPath();
-        this.ctx.arc(p.position.x, p.position.y, 3, 0, Math.PI * 2);
+        this.ctx.arc(p.position.x - radius * 0.15, p.position.y - radius * 0.15, radius * 0.35, 0, Math.PI * 2);
         this.ctx.fill();
-
-      // ── STANDARD ORB ───────────────────────────────────────────────────
-      } else {
-        const radius = p.circleRadius || 6;
-        const vMag   = Math.sqrt(p.velocity.x ** 2 + p.velocity.y ** 2);
-        const stamp  = this._getGlowStamp(color, color2);
-
-        // Motion-stretch: at high speed squish the stamp along velocity axis
-        const stretchAmt = Math.min(vMag * 0.04, 0.6);
-        const angle = vMag > 1 ? Math.atan2(p.velocity.y, p.velocity.x) : 0;
-        const drawR = radius * 2.4;
-
-        this.ctx.save();
-        this.ctx.translate(p.position.x, p.position.y);
-        if (stretchAmt > 0.05) {
-          this.ctx.rotate(angle);
-          this.ctx.scale(1 + stretchAmt, 1 - stretchAmt * 0.4);
-          this.ctx.rotate(-angle);
-        }
-
-        // Outer chromatic halo (drawn at larger size, low alpha)
-        const haloStamp = this._getGlowStamp(color2 || "#ffffff", color);
-        this.ctx.globalAlpha = 0.14;
-        this.ctx.drawImage(haloStamp, -drawR * 1.9, -drawR * 1.9, drawR * 3.8, drawR * 3.8);
-
-        // Main orb
-        this.ctx.globalAlpha = 0.92;
-        this.ctx.drawImage(stamp, -drawR, -drawR, drawR * 2, drawR * 2);
-
-        this.ctx.restore();
-
-        // Lens-flare cross (4-point star) for high-damage weapons
-        if (radius >= 6) {
-          const fLen  = radius * (2.2 + Math.sin(now / 180) * 0.3);
-          const fAlpha = 0.55 + Math.sin(now / 220) * 0.12;
-          this.ctx.lineCap = "round";
-          this.ctx.globalAlpha = fAlpha;
-
-          // Horizontal arm
-          const hg = this.ctx.createLinearGradient(
-            p.position.x - fLen, p.position.y,
-            p.position.x + fLen, p.position.y,
-          );
-          hg.addColorStop(0,   "rgba(0,0,0,0)");
-          hg.addColorStop(0.4, color);
-          hg.addColorStop(0.5, "#ffffff");
-          hg.addColorStop(0.6, color);
-          hg.addColorStop(1,   "rgba(0,0,0,0)");
-          this.ctx.strokeStyle = hg;
-          this.ctx.lineWidth   = Math.max(0.8, radius * 0.22);
-          this.ctx.beginPath();
-          this.ctx.moveTo(p.position.x - fLen, p.position.y);
-          this.ctx.lineTo(p.position.x + fLen, p.position.y);
-          this.ctx.stroke();
-
-          // Vertical arm
-          const vg = this.ctx.createLinearGradient(
-            p.position.x, p.position.y - fLen,
-            p.position.x, p.position.y + fLen,
-          );
-          vg.addColorStop(0,   "rgba(0,0,0,0)");
-          vg.addColorStop(0.4, color);
-          vg.addColorStop(0.5, "#ffffff");
-          vg.addColorStop(0.6, color);
-          vg.addColorStop(1,   "rgba(0,0,0,0)");
-          this.ctx.strokeStyle = vg;
-          this.ctx.beginPath();
-          this.ctx.moveTo(p.position.x, p.position.y - fLen);
-          this.ctx.lineTo(p.position.x, p.position.y + fLen);
-          this.ctx.stroke();
-
-          // Diagonal 45° short arms (softer)
-          this.ctx.globalAlpha = fAlpha * 0.4;
-          this.ctx.lineWidth   = Math.max(0.5, radius * 0.12);
-          const dLen = fLen * 0.55;
-          [[1,1],[-1,1],[1,-1],[-1,-1]].forEach(([dx, dy]) => {
-            this.ctx.strokeStyle = color;
-            this.ctx.beginPath();
-            this.ctx.moveTo(p.position.x, p.position.y);
-            this.ctx.lineTo(p.position.x + dx * dLen, p.position.y + dy * dLen);
-            this.ctx.stroke();
-          });
-        }
       }
       this.ctx.restore();
     });
